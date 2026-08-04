@@ -10,7 +10,7 @@
 //   blockav update database
 //   blockav scan C:\Users\you\Downloads
 //   blockav scan C:\path\test.exe
-//   blockav quarantine --list
+//   blockav process  	扫描运行中的进程（特征库+可疑识别）
 
 #include <iostream>
 #include <string>
@@ -26,6 +26,7 @@
 #include "monitor.h"
 #include "whitelist.h"
 #include "yara.h"
+#include "process.h"
 
 namespace fs = std::filesystem;
 
@@ -47,7 +48,7 @@ static void printUsage() {
         "  blockav whitelist --add <文件>     将文件加入白名单（信任，不再报警）\n"
         "  blockav whitelist --remove <MD5>   从白名单移除\n"
         "  blockav yara <规则.yar> <文件/目录> 用 YARA 规则扫描\n"
-        "  blockav quarantine --list          列出隔离区\n"
+        "  blockav process  	扫描运行中的进程（特征库+可疑识别）          列出隔离区\n"
         "  blockav quarantine --restore <文件> 从隔离区恢复\n"
         "  blockav info                       显示已加载签名统计\n";
 }
@@ -256,8 +257,27 @@ int main(int argc, char* argv[]) {
             q.quarantine(argv[3], "manual", out);
             return 0;
         }
-        std::cout << "用法: blockav quarantine --list | --restore <文件> | --add <文件>" << std::endl;
+        std::cout << "用法: blockav process  	扫描运行中的进程（特征库+可疑识别） | --restore <文件> | --add <文件>" << std::endl;
         return 0;
+    }
+    else if (cmd == "process" || cmd == "proc") {
+        if (argc >= 4 && std::string(argv[2]) == "--db") dbDir = argv[3];
+        loadDatabase(db, dbDir);
+        av::Scanner scanner(db);
+        std::vector<av::ProcessResult> results;
+        std::cout << "[进程] 正在扫描运行中的进程..." << std::endl;
+        av::scanProcesses(db, results);
+        if (results.empty()) {
+            std::cout << "[结果] 未发现威胁或可疑进程" << std::endl;
+            return 0;
+        }
+        std::cout << "[进程] 发现问题 " << results.size() << " 个:" << std::endl;
+        for (const auto& r : results) {
+            std::cout << "  ["
+                      << (r.infected ? "威胁" : "可疑") << "] PID=" << r.pid
+                      << " " << r.path << " -> " << r.threat << std::endl;
+        }
+        return results.empty() ? 0 : 2;
     }
     else if (cmd == "help" || cmd == "-h" || cmd == "--help") {
         printUsage();
