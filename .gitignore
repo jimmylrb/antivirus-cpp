@@ -1,5 +1,5 @@
 # 构建产物
-blockav.exe
+erbai_av.exe
 *.obj
 *.exe
 *.o
