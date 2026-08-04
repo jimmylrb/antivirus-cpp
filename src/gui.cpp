@@ -429,18 +429,21 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
 
 // ---------- 扫描线程 ----------
 
-static void scanThreadFunc(const std::string& path) {
+static void scanThreadFunc(std::vector<std::string> paths) {
     size_t total = 0;
     {
         std::error_code ec;
-        if (std::filesystem::is_directory(path, ec)) {
-            for (auto it = std::filesystem::recursive_directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
-                 it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-                if (ec) { ec.clear(); continue; }
-                if (it->is_regular_file(ec)) total++;
+        for (const auto& p : paths) {
+            std::filesystem::path fp(p);
+            if (std::filesystem::is_directory(fp, ec)) {
+                for (auto it = std::filesystem::recursive_directory_iterator(fp, std::filesystem::directory_options::skip_permission_denied, ec);
+                     it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                    if (ec) { ec.clear(); continue; }
+                    if (it->is_regular_file(ec)) total++;
+                }
+            } else if (std::filesystem::is_regular_file(fp, ec)) {
+                total++;
             }
-        } else if (std::filesystem::is_regular_file(path, ec)) {
-            total = 1;
         }
     }
     g.totalFiles = total;
@@ -450,10 +453,14 @@ static void scanThreadFunc(const std::string& path) {
     size_t count = 0;
     HeuristicEngine heuristic;
 
-    g.scanner->scanDirectoryParallel(path, results, 0, [&](const ScanResult&) {
-        count++;
-        PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)count, 0);
-    });
+    for (const auto& p : paths) {
+        std::vector<ScanResult> sub;
+        g.scanner->scanDirectoryParallel(p, sub, 0, [&](const ScanResult&) {
+            count++;
+            PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)count, 0);
+        });
+        results.insert(results.end(), sub.begin(), sub.end());
+    }
     if (g.heuristicEnabled) {
         std::vector<ScanResult> heuHits;
         for (const auto& r : results) {
@@ -939,6 +946,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"请先选择扫描目录", L"提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
+            // 路径有效性检查（无效立即提示，避免"0 文件"困惑）
+            {
+                std::error_code ec;
+                std::wstring wp(path);
+                bool isDir = std::filesystem::is_directory(wp, ec);
+                bool isFile = !ec && !isDir && std::filesystem::is_regular_file(wp, ec);
+                if (!isDir && !isFile) {
+                    MessageBoxW(hwnd, L"路径不存在或无法访问，请重新选择", L"提示", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+            }
             g.heuristicEnabled = (SendMessageW(g.hHeuristicCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             ListView_DeleteAllItems(g.hList);
             g.results.clear();
@@ -959,8 +977,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g.scanning = true;
             g.stopRequested = false;
             g.scanStartTime = GetTickCount64();
-            std::string pathStr = wideToUtf8(path);
-            g.scanThread = std::thread(scanThreadFunc, pathStr);
+            std::vector<std::string> paths;
+            paths.push_back(wideToUtf8(path));
+            g.scanThread = std::thread(scanThreadFunc, paths);
         }
         else if (id == IDC_STOP_BTN) {
             g.stopRequested = true;
@@ -1028,12 +1047,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_DROPFILES: {
         HDROP hDrop = (HDROP)wParam;
-        wchar_t path[MAX_PATH];
-        if (DragQueryFileW(hDrop, 0, path, MAX_PATH) > 0) {
-            SetWindowTextW(g.hEdit, path);
-            DragFinish(hDrop);
-            if (!g.scanning)
-                SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
+        UINT nFiles = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+        std::vector<std::wstring> dropped;
+        for (UINT i = 0; i < nFiles; ++i) {
+            wchar_t path[MAX_PATH];
+            if (DragQueryFileW(hDrop, i, path, MAX_PATH) > 0)
+                dropped.push_back(path);
+        }
+        DragFinish(hDrop);
+        if (dropped.empty()) return 0;
+        // 输入框显示第一个路径（多个显示逗号分隔省略）
+        SetWindowTextW(g.hEdit, dropped[0].c_str());
+        if (!g.scanning && !dropped.empty()) {
+            std::vector<std::string> paths;
+            for (auto& d : dropped) paths.push_back(wideToUtf8(d));
+            g.scanning = true;
+            g.stopRequested = false;
+            g.scanStartTime = GetTickCount64();
+            g.progress = 0;
+            InvalidateRect(hwnd, &g.progressRect, TRUE);
+            EnableWindow(g.hScanBtn, FALSE);
+            EnableWindow(g.hStopBtn, TRUE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            setStatus(L"扫描中...");
+            g.statTime = L"...";
+            g.statThreats = L"0";
+            { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
+            ListView_DeleteAllItems(g.hList);
+            g.results.clear();
+            g.infectedCount = 0;
+            g.suspiciousCount = 0;
+            g.scanThread = std::thread(scanThreadFunc, paths);
         }
         return 0;
     }
@@ -1076,6 +1122,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         std::wstring msg = L"扫描完成: " + std::to_wstring(total) + L" 个文件, 发现 " +
                            std::to_wstring(infected) + L" 个威胁" +
                            (g.stopRequested ? L" (已停止)" : L"");
+        if (total == 0 && !g.stopRequested)
+            msg = L"该位置没有可扫描的文件（空目录或路径无效）";
         setStatus(msg.c_str());
         // 无威胁时列表显示提示行（让扫描结果有反馈）
         if (infected == 0 && total > 0) {
