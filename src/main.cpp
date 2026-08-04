@@ -24,6 +24,8 @@
 #include "quarantine.h"
 #include "md5.h"
 #include "monitor.h"
+#include "whitelist.h"
+#include "yara.h"
 
 namespace fs = std::filesystem;
 
@@ -38,9 +40,13 @@ static void printUsage() {
     std::cout <<
         "用法:\n"
         "  blockav update <库目录>            加载签名库 (*.hdb / *.ndb)\n"
-        "  blockav scan <文件或目录> [--heu]  扫描（--heu 开启启发式）\n"
+        "  blockav scan <文件或目录> [--heu]  扫描（--heu 开启启发式, 默认多线程）\n"
         "  blockav scan --db <库目录> <路径>  指定库扫描\n"
         "  blockav monitor <目录> [--quarantine] 实时监控目录（新文件自动扫描）\n"
+        "  blockav whitelist --list           列出白名单\n"
+        "  blockav whitelist --add <文件>     将文件加入白名单（信任，不再报警）\n"
+        "  blockav whitelist --remove <MD5>   从白名单移除\n"
+        "  blockav yara <规则.yar> <文件/目录> 用 YARA 规则扫描\n"
         "  blockav quarantine --list          列出隔离区\n"
         "  blockav quarantine --restore <文件> 从隔离区恢复\n"
         "  blockav info                       显示已加载签名统计\n";
@@ -123,11 +129,16 @@ int main(int argc, char* argv[]) {
         std::cout << "[扫描] 签名库: " << sigs << " 条 | 目标: " << target << std::endl;
 
         av::Scanner scanner(db);
+        av::Whitelist wl("whitelist.txt");
+        scanner.setWhitelist(&wl);
+
         std::vector<av::ScanResult> results;
         std::atomic<size_t> done{0};
-        scanner.scanDirectory(target, results, [&](const av::ScanResult&) {
-            done++;
-            if (done % 100 == 0) std::cout << "  已扫描 " << done << " 个文件...\r" << std::flush;
+        size_t threads = av::Scanner::defaultThreadCount();
+        std::cout << "[扫描] 线程数: " << threads << " (并行加速)\n";
+        scanner.scanDirectoryParallel(target, results, threads, [&](const av::ScanResult&) {
+            size_t d = done.fetch_add(1) + 1;
+            if (d % 200 == 0) std::cout << "  已扫描 " << d << " 个文件...\r" << std::flush;
         });
         std::cout << std::endl;
 
@@ -182,6 +193,55 @@ int main(int argc, char* argv[]) {
         std::cin.get();
         monitor.stop();
         return 0;
+    }
+    else if (cmd == "whitelist") {
+        av::Whitelist wl("whitelist.txt");
+        if (argc < 3) { wl.list_usage(); return 0; }
+        std::string sub = argv[2];
+        if (sub == "--list") {
+            std::cout << "===== 白名单 (信任文件, 共 " << wl.size() << " 条) =====" << std::endl;
+            wl.list();
+        } else if (sub == "--add" && argc >= 4) {
+            std::string md5 = av::Scanner::fileMd5(argv[3]);
+            if (md5.empty()) { std::cerr << "[错误] 无法计算 MD5: " << argv[3] << std::endl; return 1; }
+            wl.add(md5);
+        } else if (sub == "--remove" && argc >= 4) {
+            wl.remove(argv[3]);
+        } else {
+            std::cout << "用法: blockav whitelist --list | --add <文件> | --remove <MD5>" << std::endl;
+        }
+        return 0;
+    }
+    else if (cmd == "yara") {
+        if (argc < 4) {
+            std::cerr << "[错误] 用法: blockav yara <规则.yar> <文件/目录>" << std::endl;
+            return 1;
+        }
+        av::YaraEngine engine;
+        if (!engine.loadFromFile(argv[2])) return 1;
+        std::string target = argv[3];
+
+        std::vector<fs::path> files;
+        av::Scanner::collectFiles(target, files);
+        std::cout << "[YARA] 扫描 " << files.size() << " 个文件..." << std::endl;
+
+        size_t hits = 0;
+        for (const auto& f : files) {
+            std::error_code ec;
+            auto size = fs::file_size(f, ec);
+            if (ec || size == 0 || size > 16 * 1024 * 1024) continue;
+            std::ifstream in(f, std::ios::binary);
+            if (!in) continue;
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            auto matched = engine.scan(data);
+            if (!matched.empty()) {
+                for (const auto& r : matched)
+                    std::cout << "  [YARA] " << f.string() << " -> " << r << std::endl;
+                hits++;
+            }
+        }
+        std::cout << "[结果] YARA 命中 " << hits << " 个文件" << std::endl;
+        return hits > 0 ? 2 : 0;
     }
     else if (cmd == "quarantine") {
         av::Quarantine q("quarantine");
