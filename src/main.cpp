@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 
 static void printBanner() {
     std::cout << "=========================================\n";
-    std::cout << "   方块杀毒 BlockAV v0.1 (C++学习项目)\n";
+    std::cout << "   二伯杀毒 ErBaiAV v1.0 (C++学习项目)\n";
     std::cout << "   特征库: ClamAV 格式 | 启发式: 内置\n";
     std::cout << "=========================================\n";
 }
