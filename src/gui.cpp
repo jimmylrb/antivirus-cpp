@@ -512,6 +512,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         UINT dpi = GetDpiForWindow(hwnd);
         g_scale = dpi / 96.0f;
+        // 与 wWinMain 相同的屏幕限制（多显示器一致性）
+        RECT work;
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+            float maxW = (float)(work.right - work.left) / 800.0f;
+            float maxH = (float)(work.bottom - work.top) / 620.0f;
+            float maxScale = maxW < maxH ? maxW : maxH;
+            if (g_scale > maxScale) g_scale = maxScale;
+        }
 
         g.hFontTitle = CreateFontW(S(26), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -1212,6 +1220,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
             g_scale = dpi / 96.0f;
             ReleaseDC(NULL, hdc);
         }
+        // 限制窗口不超过屏幕工作区（窗口逻辑尺寸 800x620）
+        RECT work;
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+            float maxW = (float)(work.right - work.left) / 800.0f;
+            float maxH = (float)(work.bottom - work.top) / 620.0f;
+            float maxScale = maxW < maxH ? maxW : maxH;
+            if (g_scale > maxScale) g_scale = maxScale;
+        }
     }
 
     // 加载病毒库
@@ -1254,6 +1270,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     if (!hwnd) {
         MessageBoxW(NULL, L"窗口创建失败", L"错误", MB_OK | MB_ICONERROR);
         return 1;
+    }
+    // 窗口居中到工作区（避免跑到屏幕外）
+    {
+        RECT work, rc;
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0) && GetWindowRect(hwnd, &rc)) {
+            int w = rc.right - rc.left, h = rc.bottom - rc.top;
+            int x = work.left + (work.right - work.left - w) / 2;
+            int y = work.top + (work.bottom - work.top - h) / 2;
+            if (x < work.left) x = work.left;
+            if (y < work.top) y = work.top;
+            SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        }
     }
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
