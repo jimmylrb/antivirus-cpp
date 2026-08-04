@@ -20,6 +20,27 @@
 #include <fstream>
 
 #include "scanner.h"
+#include "process.h"
+#include "monitor.h"
+
+namespace fsg = std::filesystem;
+
+// 加载特征库目录（与 CLI 一致）
+static size_t loadDatabase(av::SignatureDB& db, const std::string& dir) {
+    db.clear();
+    size_t loaded = 0;
+    std::error_code ec;
+    if (!fsg::exists(dir, ec)) return 0;
+    for (const auto& entry : fsg::directory_iterator(dir, ec)) {
+        auto ext = entry.path().extension().string();
+        if (ext == ".hdb" || ext == ".ndb" || ext == ".hdu" || ext == ".ndu") {
+            size_t before = db.totalCount();
+            if (db.loadFromFile(entry.path().string()))
+                loaded += db.totalCount() - before;
+        }
+    }
+    return loaded;
+}
 #include "heuristic.h"
 #include "quarantine.h"
 #include "whitelist.h"
@@ -71,6 +92,9 @@ enum {
     IDC_TRUST_BTN,
     IDC_QUARANTINE_ALL_BTN,
     IDC_REPORT_BTN,
+    IDC_PROCESS_BTN,
+    IDC_QUICK_BTN,
+    IDC_UPDATE_BTN,
     IDC_HEURISTIC_CHECK,
     IDC_PROGRESS,
     IDC_LIST,
@@ -89,6 +113,7 @@ static int S(int v) { return (int)(v * g_scale + 0.5f); }
 
 struct AppState {
     HWND hEdit, hBrowse, hProgress, hList, hStatus;
+    HWND hProcessBtn, hQuickBtn, hUpdateBtn;
     HWND hScanBtn, hStopBtn, hQuarantineBtn, hHeuristicCheck;
     HWND hTrustBtn, hQuarantineAllBtn, hReportBtn;
     HWND hStatFiles, hStatThreats, hStatTime, hLogo;
@@ -99,7 +124,11 @@ struct AppState {
     std::atomic<bool> stopRequested{false};
     std::atomic<bool> heuristicEnabled{true};
     Scanner* scanner = nullptr;
+    SignatureDB* db = nullptr;
     Quarantine* quarantine = nullptr;
+    std::vector<av::FileMonitor*> monitors;
+    std::mutex threatMutex;
+    std::string pendingPath, pendingThreat;
     Whitelist* whitelist = nullptr;
     size_t totalFiles = 0;
     size_t infectedCount = 0;
@@ -512,6 +541,143 @@ static void scanThreadFunc(std::vector<std::wstring> paths) {
     PostMessageW(GetParent(g.hList), WM_SCAN_DONE, infected, results.size());
 }
 
+// ---------- 进程扫描线程 ----------
+static void processScanThreadFunc() {
+    std::vector<av::ProcessResult> procs;
+    if (g.db) av::scanProcesses(*g.db, procs);
+    // 转成 ScanResult 存入列表
+    std::vector<ScanResult> results;
+    for (auto& p : procs) {
+        ScanResult r;
+        r.infected = true;  // 威胁/可疑都显示在列表
+        char pidBuf[32];
+        sprintf_s(pidBuf, "PID=%lu | ", (unsigned long)p.pid);
+        r.path = std::string(pidBuf) + p.path;
+        r.threat = p.threat;
+        results.push_back(r);
+    }
+    g.results = results;
+    size_t infected = 0;
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (results[i].infected) {
+            infected++;
+            PostMessageW(GetParent(g.hList), WM_SCAN_THREAT, (WPARAM)i, 0);
+        }
+    }
+    g.infectedCount = infected;
+    g.suspiciousCount = 0;
+    g.totalFiles = procs.size();
+    PostMessageW(GetParent(g.hList), WM_SCAN_DONE, infected, results.size());
+}
+
+// ---------- 快速扫描路径收集 ----------
+static void collectStartupPaths(std::vector<std::wstring>& out) {
+    // 注册表 Run 键
+    const wchar_t* roots[] = {
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    };
+    HKEY hkRoots[] = { HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
+    for (auto root : hkRoots) {
+        for (auto* sub : roots) {
+            HKEY key;
+            if (RegOpenKeyExW(root, sub, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+                wchar_t name[256], data[MAX_PATH * 2];
+                DWORD nIdx = 0;
+                while (true) {
+                    DWORD nName = 256, nData = MAX_PATH * 2, type = 0;
+                    LONG r = RegEnumValueW(key, nIdx++, name, &nName, NULL, &type,
+                                           (BYTE*)data, &nData);
+                    if (r != ERROR_SUCCESS) break;
+                    if (type == REG_SZ || type == REG_EXPAND_SZ) {
+                        std::wstring cmd(data);
+                        // 提取可执行文件路径（去掉引号和参数）
+                        std::wstring exe;
+                        size_t start = cmd.find_first_not_of(L" \"");
+                        if (start != std::wstring::npos && cmd[start] == L'"') {
+                            size_t end = cmd.find(L'"', start + 1);
+                            if (end != std::wstring::npos) exe = cmd.substr(start + 1, end - start - 1);
+                        } else if (start != std::wstring::npos) {
+                            size_t end = cmd.find_first_of(L" ", start);
+                            exe = cmd.substr(start, end - start);
+                        }
+                        // 展开环境变量
+                        if (!exe.empty() && exe[0] == L'%') {
+                            wchar_t exp[MAX_PATH];
+                            if (ExpandEnvironmentStringsW(exe.c_str(), exp, MAX_PATH) > 0)
+                                exe = exp;
+                        }
+                        if (!exe.empty() && exe.find(L'.') != std::wstring::npos)
+                            out.push_back(exe);
+                    }
+                }
+                RegCloseKey(key);
+            }
+        }
+    }
+    // 启动文件夹
+    wchar_t startup[MAX_PATH];
+    if (SHGetFolderPathW(NULL, CSIDL_STARTUP, NULL, 0, startup) == S_OK)
+        out.push_back(startup);
+    if (SHGetFolderPathW(NULL, CSIDL_COMMON_STARTUP, NULL, 0, startup) == S_OK)
+        out.push_back(startup);
+}
+
+static std::vector<std::wstring> collectQuickScanPaths() {
+    std::vector<std::wstring> paths;
+    collectStartupPaths(paths);
+    // 临时目录
+    wchar_t tmp[MAX_PATH];
+    if (GetTempPathW(MAX_PATH, tmp) > 0) paths.push_back(tmp);
+    // 下载目录
+    wchar_t* dl = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, NULL, &dl))) {
+        paths.push_back(dl);
+        CoTaskMemFree(dl);
+    }
+    return paths;
+}
+
+// ---------- 病毒库更新线程 ----------
+static void updateDatabaseThreadFunc() {
+    // 调用 python update_database.py（后台）
+    wchar_t dir[MAX_PATH];
+    GetCurrentDirectoryW(MAX_PATH, dir);
+    std::wstring script = std::wstring(dir) + L"\\update_database.py";
+    std::wstring cmd = L"python \"" + script + L"\"";
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {0};
+    BOOL ok = CreateProcessW(NULL, &cmd[0], NULL, NULL, FALSE,
+                             CREATE_NO_WINDOW, NULL, dir, &si, &pi);
+    if (!ok) {
+        // 尝试 py 启动器
+        cmd = L"py \"" + script + L"\"";
+        ok = CreateProcessW(NULL, &cmd[0], NULL, NULL, FALSE,
+                            CREATE_NO_WINDOW, NULL, dir, &si, &pi);
+    }
+    if (!ok) {
+        std::wstring msg = L"更新失败：未找到 Python（需要安装 Python 并加入 PATH）";
+        PostMessageW(GetParent(g.hList), WM_SCAN_DONE, (WPARAM)1, (LPARAM)0);
+        return;
+    }
+    WaitForSingleObject(pi.hProcess, 5 * 60 * 1000);  // 最多等 5 分钟
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    // 重新加载病毒库
+    if (g.db) {
+        loadDatabase(*g.db, "database");
+    }
+    std::wstring msg = (code == 0)
+        ? L"病毒库更新完成，已加载最新签名"
+        : L"病毒库更新失败（网络或脚本错误），已保留旧库";
+    g.progress = 10000;
+    InvalidateRect(GetParent(g.hList), &g.progressRect, TRUE);
+    PostMessageW(GetParent(g.hList), WM_SCAN_DONE, (WPARAM)0, (LPARAM)0);
+    setStatus(msg.c_str());
+}
+
 // ---------- 窗口过程 ----------
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -525,7 +691,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT work;
         if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
             float maxW = (float)(work.right - work.left) / 800.0f;
-            float maxH = (float)(work.bottom - work.top) / 620.0f;
+            float maxH = (float)(work.bottom - work.top) / 670.0f;
             float maxScale = maxW < maxH ? maxW : maxH;
             if (g_scale > maxScale) g_scale = maxScale;
         }
@@ -598,6 +764,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                      S(335), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_REPORT_BTN, hInst, NULL);
         g.hStatus = CreateWindowW(L"STATIC", L"就绪 - 可选择目录或直接拖入文件", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
                                   S(440), S(WORK_TOP) + S(424), S(280), S(30), hwnd, (HMENU)IDC_STATUS, hInst, NULL);
+        // 第二排按钮（y = WORK_TOP + 460）：进程扫描 / 快速扫描 / 更新病毒库
+        g.hProcessBtn = CreateWindowW(L"BUTTON", L"⚙ 进程扫描", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                      S(20), S(WORK_TOP) + S(460), S(110), S(30), hwnd, (HMENU)IDC_PROCESS_BTN, hInst, NULL);
+        g.hQuickBtn = CreateWindowW(L"BUTTON", L"⚡ 快速扫描", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                    S(135), S(WORK_TOP) + S(460), S(110), S(30), hwnd, (HMENU)IDC_QUICK_BTN, hInst, NULL);
+        g.hUpdateBtn = CreateWindowW(L"BUTTON", L"🔄 更新病毒库", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                     S(250), S(WORK_TOP) + S(460), S(140), S(30), hwnd, (HMENU)IDC_UPDATE_BTN, hInst, NULL);
 
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                           GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
@@ -643,7 +816,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         int hover = -1;
         HWND btns[] = { g.hScanBtn, g.hStopBtn, g.hBrowse,
-                        g.hQuarantineBtn, g.hTrustBtn, g.hQuarantineAllBtn, g.hReportBtn };
+                        g.hQuarantineBtn, g.hTrustBtn, g.hQuarantineAllBtn, g.hReportBtn,
+                        g.hProcessBtn, g.hQuickBtn, g.hUpdateBtn };
         for (HWND h : btns) {
             if (!h) continue;
             RECT rc;
@@ -746,6 +920,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             MessageBoxW(hwnd, L"病毒库更新失败，请检查网络或 Python 环境。", L"二伯杀毒",
                         MB_OK | MB_ICONWARNING);
         setStatus(L"病毒库更新结束");
+        return 0;
+    }
+
+    case WM_APP + 10: {
+        // 实时监控发现威胁：托盘气泡 + 加入结果列表
+        std::string p, t;
+        { std::lock_guard<std::mutex> lk(g.threatMutex);
+          p = g.pendingPath; t = g.pendingThreat; }
+        if (p.empty()) return 0;
+        // 托盘气泡
+        NOTIFYICONDATAW nid = { sizeof(nid) };
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        MultiByteToWideChar(CP_ACP, 0, p.c_str(), (int)p.size(), nid.szInfo, 255);
+        wcscpy_s(nid.szInfoTitle, L"二伯杀毒 - 实时防护");
+        nid.dwInfoFlags = NIIF_WARNING;
+        nid.uTimeout = 8000;
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+        // 加入结果列表
+        ScanResult r;
+        r.path = p;
+        r.threat = t;
+        r.infected = true;
+        g.results.push_back(r);
+        PostMessageW(hwnd, WM_SCAN_THREAT, (WPARAM)(g.results.size() - 1), 0);
+        g.infectedCount++;
+        { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
+        setStatus(L"⚠ 实时监控发现威胁，已加入结果列表");
         return 0;
     }
 
@@ -1059,6 +1262,48 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 exportReport(filename);
             }
         }
+        else if (id == IDC_PROCESS_BTN) {
+            // 进程扫描
+            if (g.scanning) return 0;
+            ListView_DeleteAllItems(g.hList);
+            g.results.clear();
+            g.infectedCount = 0;
+            g.suspiciousCount = 0;
+            g.progress = 0;
+            InvalidateRect(hwnd, &g.progressRect, TRUE);
+            setStatus(L"正在扫描运行中的进程...");
+            g.scanning = true;
+            g.stopRequested = false;
+            g.scanStartTime = GetTickCount64();
+            g.scanThread = std::thread(processScanThreadFunc);
+        }
+        else if (id == IDC_QUICK_BTN) {
+            // 快速扫描：启动项 + 临时目录 + 下载目录
+            if (g.scanning) return 0;
+            ListView_DeleteAllItems(g.hList);
+            g.results.clear();
+            g.infectedCount = 0;
+            g.suspiciousCount = 0;
+            g.progress = 0;
+            InvalidateRect(hwnd, &g.progressRect, TRUE);
+            std::vector<std::wstring> paths = collectQuickScanPaths();
+            if (paths.empty()) {
+                setStatus(L"未找到可扫描的启动项/临时目录");
+                return 0;
+            }
+            setStatus(L"快速扫描中...");
+            g.scanning = true;
+            g.stopRequested = false;
+            g.scanStartTime = GetTickCount64();
+            g.scanThread = std::thread(scanThreadFunc, paths);
+        }
+        else if (id == IDC_UPDATE_BTN) {
+            // 病毒库一键更新
+            if (g.scanning) return 0;
+            setStatus(L"正在更新病毒库（下载 ClamAV 官方库）...");
+            g.scanning = true;
+            g.scanThread = std::thread(updateDatabaseThreadFunc);
+        }
         return 0;
     }
 
@@ -1233,7 +1478,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         RECT work;
         if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
             float maxW = (float)(work.right - work.left) / 800.0f;
-            float maxH = (float)(work.bottom - work.top) / 620.0f;
+            float maxH = (float)(work.bottom - work.top) / 670.0f;
             float maxScale = maxW < maxH ? maxW : maxH;
             if (g_scale > maxScale) g_scale = maxScale;
         }
@@ -1258,6 +1503,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     Whitelist wl("whitelist.txt");
     scanner.setWhitelist(&wl);
     g.scanner = &scanner;
+    g.db = &db;
     g.quarantine = &q;
     g.whitelist = &wl;
 
@@ -1274,7 +1520,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     HWND hwnd = CreateWindowW(L"BlockAVWindow", L"二伯杀毒 ErBaiAV",
                               WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
                               CW_USEDEFAULT, CW_USEDEFAULT,
-                              S(800), S(620),
+                              S(800), S(670),
                               NULL, NULL, hInstance, NULL);
     if (!hwnd) {
         MessageBoxW(NULL, L"窗口创建失败", L"错误", MB_OK | MB_ICONERROR);
@@ -1303,10 +1549,43 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         ShowWindow(hwnd, SW_HIDE);
     }
 
+    // ===== 实时监控：下载/桌面/临时目录，发现威胁弹托盘气泡 =====
+    {
+        auto startMonitor = [&](const std::wstring& dirW) {
+            if (dirW.empty()) return;
+            // 宽字符 → GBK（FileMonitor 用 string）
+            std::string dir;
+            int n = WideCharToMultiByte(CP_ACP, 0, dirW.c_str(), (int)dirW.size(), NULL, 0, NULL, NULL);
+            dir.assign(n > 0 ? n : 0, 0);
+            if (n > 0) WideCharToMultiByte(CP_ACP, 0, dirW.c_str(), (int)dirW.size(), &dir[0], n, NULL, NULL);
+            if (dir.empty()) return;
+            auto* m = new av::FileMonitor(dir, scanner, [](const std::string& p, const std::string& t) {
+                { std::lock_guard<std::mutex> lk(g.threatMutex);
+                  g.pendingPath = p; g.pendingThreat = t; }
+                PostMessageW(GetParent(g.hList), WM_APP + 10, 0, 0);
+            });
+            if (m->start()) g.monitors.push_back(m);
+            else delete m;
+        };
+        wchar_t* dl = NULL;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, NULL, &dl))) {
+            startMonitor(dl);
+            CoTaskMemFree(dl);
+        }
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, NULL, &dl))) {
+            startMonitor(dl);
+            CoTaskMemFree(dl);
+        }
+        wchar_t tmp[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, tmp) > 0) startMonitor(tmp);
+    }
+
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    for (auto* m : g.monitors) { m->stop(); delete m; }
+    g.monitors.clear();
     return (int)msg.wParam;
 }
