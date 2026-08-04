@@ -30,7 +30,7 @@ env["LIB"] = ";".join([
 ])
 
 src = os.path.join(ROOT, "src", "gui.cpp")
-out = os.path.join(ROOT, "blockav_gui.exe")
+out = os.path.join(ROOT, "ErBaiAV.exe")
 
 cmd = [
     CL, "/nologo", "/std:c++17", "/O2", "/EHsc", "/W3", "/utf-8",
