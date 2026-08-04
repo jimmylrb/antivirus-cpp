@@ -122,9 +122,18 @@ static AppState g;
 
 static std::wstring utf8ToWide(const std::string& s) {
     if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, NULL, 0);
-    std::wstring w(n - 1, 0);
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+// 文件路径是系统 ANSI(GBK) 编码，用 ACP 解码为宽字符
+static std::wstring acpToWide(const std::string& s) {
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), (int)s.size(), NULL, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_ACP, 0, s.c_str(), (int)s.size(), &w[0], n);
     return w;
 }
 
@@ -429,7 +438,7 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
 
 // ---------- 扫描线程 ----------
 
-static void scanThreadFunc(std::vector<std::string> paths) {
+static void scanThreadFunc(std::vector<std::wstring> paths) {
     size_t total = 0;
     {
         std::error_code ec;
@@ -985,8 +994,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g.scanning = true;
             g.stopRequested = false;
             g.scanStartTime = GetTickCount64();
-            std::vector<std::string> paths;
-            paths.push_back(wideToUtf8(path));
+            std::vector<std::wstring> paths;
+            paths.push_back(path);
             g.scanThread = std::thread(scanThreadFunc, paths);
         }
         else if (id == IDC_STOP_BTN) {
@@ -999,7 +1008,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 std::string out;
                 if (g.quarantine->quarantine(g.results[sel].path, g.results[sel].threat, out)) {
                     g.results[sel].infected = false;
-                    std::wstring msg = L"已隔离: " + utf8ToWide(out);
+                    std::wstring msg = L"已隔离: " + acpToWide(out);
                     setStatus(msg.c_str());
                     ListView_SetItemText(g.hList, sel, 1, (LPWSTR)L"[已隔离]");
                 }
@@ -1012,7 +1021,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (!md5.empty()) {
                     g.whitelist->add(md5);
                     g.results[sel].infected = false;
-                    std::wstring msg = L"已信任: " + utf8ToWide(g.results[sel].path);
+                    std::wstring msg = L"已信任: " + acpToWide(g.results[sel].path);
                     setStatus(msg.c_str());
                     ListView_SetItemText(g.hList, sel, 1, (LPWSTR)L"[已信任]");
                 }
@@ -1067,8 +1076,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // 输入框显示第一个路径（多个显示逗号分隔省略）
         SetWindowTextW(g.hEdit, dropped[0].c_str());
         if (!g.scanning && !dropped.empty()) {
-            std::vector<std::string> paths;
-            for (auto& d : dropped) paths.push_back(wideToUtf8(d));
+            std::vector<std::wstring> paths;
+            for (auto& d : dropped) paths.push_back(d);
             g.scanning = true;
             g.stopRequested = false;
             g.scanStartTime = GetTickCount64();
@@ -1106,7 +1115,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_SCAN_THREAT: {
         size_t idx = (size_t)wParam;
         if (idx < g.results.size()) {
-            addListItem(utf8ToWide(g.results[idx].path).c_str(),
+            addListItem(acpToWide(g.results[idx].path).c_str(),
                         utf8ToWide(g.results[idx].threat).c_str());
         }
         return 0;
