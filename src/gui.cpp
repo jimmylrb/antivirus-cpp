@@ -108,6 +108,7 @@ struct AppState {
     int progress = 0;               // 0-10000
     RECT progressRect = {0,0,0,0};
     int hoverBtn = -1;              // 当前悬停的按钮 ID（-1=无）
+    int animFrame = 0;              // 动画帧计数
 };
 
 static AppState g;
@@ -312,7 +313,7 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     DeleteObject(pen); DeleteObject(br); DeleteObject(checkPen);
 }
 
-// 横幅：深蓝 -> 深紫 渐变 + 底部蓝色光带
+// 横幅：深蓝 -> 深紫 渐变 + 底部流光光带（蓝紫渐变动画）
 static void drawBanner(HDC hdc, int width) {
     // 纵向渐变（深蓝 #1A2440 -> 深紫 #251E47）
     for (int y = 0; y < S(BANNER_H); ++y) {
@@ -327,7 +328,7 @@ static void drawBanner(HDC hdc, int width) {
         SelectObject(hdc, old);
         DeleteObject(pen);
     }
-    // 底部蓝色渐变光带（蓝 -> 紫，低调）
+    // 底部渐变光带（蓝 -> 紫 -> 青，固定）
     for (int x = 0; x < width; ++x) {
         double t = (double)x / width;
         int r, g2, b2;
@@ -342,6 +343,26 @@ static void drawBanner(HDC hdc, int width) {
             g2 = (int)(GetGValue(CLR_PURPLE) * (1 - u) + GetGValue(CLR_CYAN) * u);
             b2 = (int)(GetBValue(CLR_PURPLE) * (1 - u) + GetBValue(CLR_CYAN) * u);
         }
+        HPEN pen = CreatePen(PS_SOLID, S(2), RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, x, S(BANNER_H) - S(2), NULL);
+        LineTo(hdc, x, S(BANNER_H));
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
+    // 流光高亮段：一个亮青段从右向左循环流动（蓝紫渐变动画）
+    int bandW = (int)(width * 0.18);
+    if (bandW < S(40)) bandW = S(40);
+    int flowX = width - (g.animFrame * S(6) % (width + bandW));
+    for (int x = flowX - bandW; x < flowX; ++x) {
+        if (x < 0 || x >= width) continue;
+        // 高亮段：青色，中间最亮，两端淡出
+        double dist = (double)(x - (flowX - bandW)) / bandW;
+        double bright = 1.0 - (dist < 0.5 ? dist * 2 : (1 - dist) * 2);
+        if (bright < 0) bright = 0;
+        int r = (int)(GetRValue(CLR_CYAN) * 0.55 + 255 * 0.45 * bright);
+        int g2 = (int)(GetGValue(CLR_CYAN) * 0.55 + 255 * 0.45 * bright);
+        int b2 = (int)(GetBValue(CLR_CYAN) * 0.55 + 255 * 0.45 * bright);
         HPEN pen = CreatePen(PS_SOLID, S(2), RGB(r, g2, b2));
         HGDIOBJ old = SelectObject(hdc, pen);
         MoveToEx(hdc, x, S(BANNER_H) - S(2), NULL);
@@ -378,6 +399,26 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
         LineTo(hdc, x, rc.bottom - S(1));
         SelectObject(hdc, old);
         DeleteObject(pen);
+    }
+    // 流动高光：亮青竖条沿进度方向循环流动（扫描时）
+    if (barW > S(20)) {
+        int hlW = S(24);
+        if (hlW > barW) hlW = barW;
+        int hlX = rc.left + S(1) + (g.animFrame * S(4) % (barW - S(2)));
+        for (int x = hlX; x < hlX + hlW && x < rc.left + barW - S(1); ++x) {
+            double dist = (double)(x - hlX) / hlW;
+            double bright = 1.0 - (dist < 0.5 ? dist * 2 : (1 - dist) * 2);
+            if (bright < 0.2) bright = 0.2;
+            int r = (int)(GetRValue(CLR_CYAN) * bright + 255 * (1 - bright));
+            int g2 = (int)(GetGValue(CLR_CYAN) * bright + 255 * (1 - bright));
+            int b2 = (int)(GetBValue(CLR_CYAN) * bright + 255 * (1 - bright));
+            HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+            HGDIOBJ old = SelectObject(hdc, pen);
+            MoveToEx(hdc, x, rc.top + S(1), NULL);
+            LineTo(hdc, x, rc.bottom - S(1));
+            SelectObject(hdc, old);
+            DeleteObject(pen);
+        }
     }
 }
 
@@ -577,7 +618,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         wcscpy_s(nid.szTip, L"二伯杀毒 ErBaiAV");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        SetTimer(hwnd, 1, 5000, NULL);
+        SetTimer(hwnd, 1, 5000, NULL);   // USB 检测
+        SetTimer(hwnd, 2, 50, NULL);     // 动画（20fps）
         return 0;
     }
 
@@ -613,6 +655,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_TIMER: {
+        if (wParam == 2) {
+            // 动画帧：刷新横幅光带 + 进度条流光
+            g.animFrame++;
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         static std::vector<std::wstring> lastDrives;
         auto now = getRemovableDrives();
         if (!lastDrives.empty() && now.size() > lastDrives.size()) {
@@ -716,20 +764,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return (LRESULT)br;
     }
 
+    case WM_ERASEBKGND: {
+        return 1;  // 防止动画闪烁（双缓冲处理背景）
+    }
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
 
+        // 双缓冲（避免动画闪烁）
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HGDIOBJ oldBmp = SelectObject(memDC, bmp);
+
         HBRUSH bg = CreateSolidBrush(CLR_BG);
-        FillRect(hdc, &rc, bg);
+        FillRect(memDC, &rc, bg);
         DeleteObject(bg);
 
-        drawBanner(hdc, rc.right);
+        drawBanner(memDC, rc.right);
+        drawProgressBar(memDC, g.progressRect, g.progress);
 
-        // 渐变进度条
-        drawProgressBar(hdc, g.progressRect, g.progress);
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, oldBmp);
+        DeleteObject(bmp);
+        DeleteDC(memDC);
 
         EndPaint(hwnd, &ps);
         return 0;
