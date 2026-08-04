@@ -120,7 +120,7 @@ def main():
             print(f"[错误] 解析失败: {e}")
             continue
 
-        # 写入 database/ 目录（按类型合并）
+        # 写入 database/ 目录（按类型合并），带失败保护
         merged = {}
         for fname, content in files:
             key = os.path.splitext(os.path.basename(fname))[1]  # .hdb/.ndb/...
@@ -129,6 +129,18 @@ def main():
         total_sigs = 0
         for ext, items in merged.items():
             out_path = os.path.join(db_dir, f"clamav{ext}")
+            # 统计新库条数
+            count = 0
+            for fname, content in items:
+                for line in split_lines(content):
+                    line = line.strip()
+                    if not line or line.startswith(b"#") or line.startswith(b"//"):
+                        continue
+                    count += 1
+            # 失败保护：条数异常少（下载不完整/解析失败）时不覆盖已有完整库
+            if count < 1000 and os.path.exists(out_path):
+                print(f"[警告] {name}.cvd 仅解析出 {count} 条（疑似下载不完整），跳过覆盖 {out_path}")
+                continue
             with open(out_path, "wb") as out:
                 for fname, content in items:
                     for line in split_lines(content):
