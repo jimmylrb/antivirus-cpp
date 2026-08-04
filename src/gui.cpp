@@ -520,14 +520,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SetWindowFont(g.hStatThreats, g.hFontStatNum, TRUE);
         SetWindowFont(g.hStatTime, g.hFontStatNum, TRUE);
 
-        // 托盘图标
+        // 托盘图标（使用自定义 ErBaiAV.ico）
         NOTIFYICONDATAW nid = {0};
         nid.cbSize = sizeof(nid);
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_APP + 9;
-        nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
+        nid.hIcon = (HICON)LoadImageW(NULL, L"ErBaiAV.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+        if (!nid.hIcon) nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
         wcscpy_s(nid.szTip, L"二伯杀毒 ErBaiAV");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -953,7 +954,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"BlockAVWindow";
-    wc.hIcon = LoadIcon(NULL, IDI_SHIELD);
+    wc.hIcon = (HICON)LoadImageW(NULL, L"ErBaiAV.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+    if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_SHIELD);
     RegisterClassW(&wc);
 
     // 用 96 DPI 逻辑尺寸创建（DPI 感知下系统自动按物理像素渲染）
