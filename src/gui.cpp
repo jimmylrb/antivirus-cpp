@@ -1,4 +1,4 @@
-// gui.cpp — 方块杀毒 BlockAV 图形界面 v3（DPI 感知，高分屏清晰）
+// gui.cpp — 二伯杀毒 ErBaiAV 图形界面 v3（DPI 感知，高分屏清晰）
 // 深色横幅 + 品牌渐变 + 威胁分级着色 + 扫描统计 + 启发式检测
 // v3: 声明 Per-Monitor DPI 感知，所有控件按 DPI 缩放，彻底解决高分屏模糊
 
@@ -156,7 +156,7 @@ static void exportReport(const wchar_t* path) {
                 "th{background:#2D9CDB;color:#fff}tr:nth-child(even){background:#f5f7fa}"
                 ".threat{color:#e74c3c;font-weight:bold}.susp{color:#e67e22;font-weight:bold}"
                 ".clean{color:#27ae60}</style></head><body>");
-    fprintf(fp, "<h1>🛡️ 方块杀毒 BlockAV 扫描报告</h1>");
+    fprintf(fp, "<h1>🛡️ 二伯杀毒 ErBaiAV 扫描报告</h1>");
     fprintf(fp, "<p>生成时间: %s</p>", timebuf);
     fprintf(fp, "<p>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
             (unsigned long long)g.totalFiles,
@@ -253,10 +253,10 @@ static void setAutoStart(bool enable) {
         return;
     if (enable) {
         std::wstring cmd = L"\"" + getExePath() + L"\" --tray";
-        RegSetValueExW(key, L"BlockAV", 0, REG_SZ,
+        RegSetValueExW(key, L"二伯杀毒", 0, REG_SZ,
                        (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
     } else {
-        RegDeleteValueW(key, L"BlockAV");
+        RegDeleteValueW(key, L"二伯杀毒");
     }
     RegCloseKey(key);
 }
@@ -268,12 +268,12 @@ static bool isAutoStartEnabled() {
                       0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
         return false;
     DWORD type = 0, size = 0;
-    LONG r = RegQueryValueExW(key, L"BlockAV", NULL, &type, NULL, &size);
+    LONG r = RegQueryValueExW(key, L"二伯杀毒", NULL, &type, NULL, &size);
     RegCloseKey(key);
     return r == ERROR_SUCCESS && size > 0;
 }
 
-// 右键菜单集成（HKCU 无需管理员）：文件/文件夹右键 -> 用 BlockAV 扫描
+// 右键菜单集成（HKCU 无需管理员）：文件/文件夹右键 -> 用二伯杀毒扫描
 static void registerShellContextMenu() {
     std::wstring exe = getExePath();
     std::wstring cmd = L"\"" + exe + L"\" --scan \"%1\"";
@@ -282,8 +282,8 @@ static void registerShellContextMenu() {
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
                         L"Software\\Classes\\*\\shell\\BlockAVScan",
                         0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用 BlockAV 扫描",
-                       (DWORD)((wcslen(L"用 BlockAV 扫描") + 1) * sizeof(wchar_t)));
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
+                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
         RegCloseKey(key);
     }
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
@@ -297,8 +297,8 @@ static void registerShellContextMenu() {
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
                         L"Software\\Classes\\Directory\\shell\\BlockAVScan",
                         0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用 BlockAV 扫描",
-                       (DWORD)((wcslen(L"用 BlockAV 扫描") + 1) * sizeof(wchar_t)));
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
+                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
         RegCloseKey(key);
     }
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
@@ -434,7 +434,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // 横幅 Logo + 标题 + 副标题
         g.hLogo = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
                                 S(20), S(14), S(72), S(72), hwnd, (HMENU)IDC_LOGO, hInst, NULL);
-        HWND hTitle = CreateWindowW(L"STATIC", L"方块杀毒 BlockAV", WS_CHILD | WS_VISIBLE,
+        HWND hTitle = CreateWindowW(L"STATIC", L"二伯杀毒 ErBaiAV", WS_CHILD | WS_VISIBLE,
                                     S(100), S(20), S(320), S(34), hwnd, NULL, hInst, NULL);
         HWND hSub = CreateWindowW(L"STATIC", L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
                                   WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, NULL, hInst, NULL);
@@ -528,7 +528,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_APP + 9;
         nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
-        wcscpy_s(nid.szTip, L"方块杀毒 BlockAV");
+        wcscpy_s(nid.szTip, L"二伯杀毒 ErBaiAV");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
         // USB 检测定时器（每 5 秒检查新移动盘）
@@ -586,11 +586,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             } else if (cmd == 12) {  // 开机自启开关
                 setAutoStart(!isAutoStartEnabled());
                 MessageBoxW(hwnd, isAutoStartEnabled() ? L"已开启开机自启" : L"已关闭开机自启",
-                            L"BlockAV", MB_OK | MB_ICONINFORMATION);
+                            L"二伯杀毒", MB_OK | MB_ICONINFORMATION);
             } else if (cmd == 13) {  // 注册右键菜单
                 registerShellContextMenu();
-                MessageBoxW(hwnd, L"右键菜单已注册！\n现在可以在文件/文件夹上右键 -> 用 BlockAV 扫描",
-                            L"BlockAV", MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(hwnd, L"右键菜单已注册！\n现在可以在文件/文件夹上右键 -> 用二伯杀毒扫描",
+                            L"二伯杀毒", MB_OK | MB_ICONINFORMATION);
             } else if (cmd == 14) {  // 更新病毒库
                 setStatus(L"正在更新病毒库（后台）...");
                 updateDatabaseAsync();
@@ -609,10 +609,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_APP + 20: {  // 病毒库更新完成
         int code = (int)wParam;
         if (code == 0)
-            MessageBoxW(hwnd, L"病毒库更新完成！请重启程序加载新签名。", L"BlockAV",
+            MessageBoxW(hwnd, L"病毒库更新完成！请重启程序加载新签名。", L"二伯杀毒",
                         MB_OK | MB_ICONINFORMATION);
         else
-            MessageBoxW(hwnd, L"病毒库更新失败，请检查网络或 Python 环境。", L"BlockAV",
+            MessageBoxW(hwnd, L"病毒库更新失败，请检查网络或 Python 环境。", L"二伯杀毒",
                         MB_OK | MB_ICONWARNING);
         setStatus(L"病毒库更新结束");
         return 0;
@@ -957,7 +957,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     RegisterClassW(&wc);
 
     // 用 96 DPI 逻辑尺寸创建（DPI 感知下系统自动按物理像素渲染）
-    HWND hwnd = CreateWindowW(L"BlockAVWindow", L"方块杀毒 BlockAV",
+    HWND hwnd = CreateWindowW(L"BlockAVWindow", L"二伯杀毒 ErBaiAV",
                               WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               S(800), S(620),
