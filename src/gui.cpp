@@ -1,5 +1,5 @@
-// gui.cpp — 二伯杀毒 ErBaiAV 图形界面 v5（未来科幻风）
-// 深色霓虹主题：发光文字 + 网格背景 + 霓虹按钮 + 发光进度条
+// gui.cpp — 二伯杀毒 ErBaiAV 图形界面 v7（简洁深色风格）
+// GitHub Dark / VS Code 风格：深灰底 + 克制蓝色 + 干净清晰，无特效堆砌
 // 保留全部功能：并行扫描/白名单/拖拽/报告/全隔离/托盘/自启/右键/USB/自动更新
 
 #define UNICODE
@@ -34,19 +34,21 @@
 
 using namespace av;
 
-// ============ 未来霓虹主题色 ============
-#define CLR_BG        RGB(0x0B, 0x0F, 0x1A)   // 深蓝黑背景
-#define CLR_PANEL     RGB(0x11, 0x17, 0x26)   // 面板
-#define CLR_GRID      RGB(0x1A, 0x24, 0x3C)   // 网格线
-#define CLR_NEON      RGB(0x00, 0xF0, 0xFF)   // 霓虹青
-#define CLR_NEON2     RGB(0x4D, 0x9F, 0xFF)   // 电蓝
-#define CLR_PURPLE    RGB(0xA8, 0x55, 0xF7)   // 霓虹紫
-#define CLR_TEXT      RGB(0xE0, 0xEA, 0xFF)   // 主文字（浅蓝白）
-#define CLR_TEXT_DIM  RGB(0x6B, 0x7A, 0x99)   // 次要文字
-#define CLR_THREAT    RGB(0xFF, 0x45, 0x6B)   // 霓虹红
-#define CLR_SUSP      RGB(0xFF, 0x9F, 0x43)   // 霓虹橙
-#define CLR_CLEAN     RGB(0x2E, 0xFF, 0x8F)   // 霓虹绿
-#define CLR_BTN_BORDER RGB(0x00, 0xC8, 0xFF)  // 按钮边框
+// ============ 简洁深色主题（GitHub Dark） ============
+#define CLR_BG        RGB(0x0D, 0x11, 0x17)   // 窗口背景
+#define CLR_PANEL     RGB(0x16, 0x1B, 0x22)   // 面板/横幅
+#define CLR_BORDER    RGB(0x30, 0x36, 0x3D)   // 边框
+#define CLR_ACCENT    RGB(0x2F, 0x81, 0xF7)   // 强调蓝
+#define CLR_ACCENT_HI RGB(0x58, 0xA6, 0xFF)   // 亮蓝
+#define CLR_TEXT      RGB(0xE6, 0xED, 0xF3)   // 主文字
+#define CLR_TEXT_DIM  RGB(0x8B, 0x94, 0x9E)   // 次要文字
+#define CLR_BTN       RGB(0x21, 0x26, 0x2D)   // 按钮底
+#define CLR_BTN_HOV   RGB(0x30, 0x36, 0x3D)   // 按钮悬停
+#define CLR_BTN_DIS   RGB(0x16, 0x1B, 0x22)   // 按钮禁用
+#define CLR_INPUT     RGB(0x0D, 0x11, 0x17)   // 输入框底
+#define CLR_THREAT    RGB(0xF8, 0x51, 0x49)   // 威胁红
+#define CLR_SUSP      RGB(0xDB, 0x6E, 0x28)   // 可疑橙
+#define CLR_CLEAN     RGB(0x3F, 0xB9, 0x50)   // 干净绿
 
 // 布局（逻辑像素 96 DPI）
 #define BANNER_H     100
@@ -99,8 +101,9 @@ struct AppState {
     size_t infectedCount = 0;
     size_t suspiciousCount = 0;
     ULONGLONG scanStartTime = 0;
-    int progress = 0;              // 0-10000，自绘渐变进度条
-    RECT progressRect = {0,0,0,0}; // 进度条区域
+    int progress = 0;               // 0-10000
+    RECT progressRect = {0,0,0,0};
+    int hoverBtn = -1;              // 当前悬停的按钮 ID（-1=无）
 };
 
 static AppState g;
@@ -137,7 +140,9 @@ static void setStatus(const wchar_t* text) {
     SetWindowTextW(g.hStatus, text);
 }
 
-static bool isSuspiciousThreat(const std::string& threat);  // 前向声明
+static bool isSuspiciousThreat(const std::string& threat) {
+    return threat.find("[启发式]") != std::string::npos;
+}
 
 // 导出扫描报告（HTML）
 static void exportReport(const wchar_t* path) {
@@ -155,15 +160,15 @@ static void exportReport(const wchar_t* path) {
     strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
     fprintf(fp, "<!DOCTYPE html><html><head><meta charset='utf-8'><title>二伯杀毒 扫描报告</title>");
-    fprintf(fp, "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:30px;color:#333;background:#0B0F1A}"
-                "h1{color:#00F0FF}table{border-collapse:collapse;width:100%%;margin-top:15px}"
-                "th,td{border:1px solid #333;padding:8px 12px;text-align:left}"
-                "th{background:#00F0FF;color:#0B0F1A}tr:nth-child(even){background:#111726}"
-                ".threat{color:#FF456B;font-weight:bold}.susp{color:#FF9F43;font-weight:bold}"
-                ".clean{color:#2EFF8F}</style></head><body>");
+    fprintf(fp, "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:30px;color:#E6EDF3;background:#0D1117}"
+                "h1{color:#58A6FF}table{border-collapse:collapse;width:100%%;margin-top:15px}"
+                "th,td{border:1px solid #30363D;padding:8px 12px;text-align:left}"
+                "th{background:#21262D;color:#E6EDF3}tr:nth-child(even){background:#161B22}"
+                ".threat{color:#F85149;font-weight:bold}.susp{color:#DB6E28;font-weight:bold}"
+                ".clean{color:#3FB950}</style></head><body>");
     fprintf(fp, "<h1>🛡️ 二伯杀毒 扫描报告</h1>");
-    fprintf(fp, "<p style='color:#E0EAFF'>生成时间: %s</p>", timebuf);
-    fprintf(fp, "<p style='color:#E0EAFF'>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
+    fprintf(fp, "<p>生成时间: %s</p>", timebuf);
+    fprintf(fp, "<p>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
             (unsigned long long)g.totalFiles,
             (unsigned long long)g.infectedCount,
             (unsigned long long)g.suspiciousCount);
@@ -173,18 +178,14 @@ static void exportReport(const wchar_t* path) {
         if (!r.infected) continue;
         n++;
         bool susp = isSuspiciousThreat(r.threat);
-        fprintf(fp, "<tr><td style='color:#6B7A99'>%d</td><td style='color:#E0EAFF'>%s</td><td class='%s'>%s</td></tr>",
+        fprintf(fp, "<tr><td>%d</td><td>%s</td><td class='%s'>%s</td></tr>",
                 n, r.path.c_str(), susp ? "susp" : "threat", r.threat.c_str());
     }
     if (n == 0) fprintf(fp, "<tr><td colspan='3' class='clean'>✅ 未发现威胁</td></tr>");
-    fprintf(fp, "</table><p style='color:#6B7A99;margin-top:30px'>由二伯杀毒 (C++ 杀毒引擎) 生成</p></body></html>");
+    fprintf(fp, "</table><p style='color:#8B949E;margin-top:30px'>由二伯杀毒 (C++ 杀毒引擎) 生成</p></body></html>");
     fclose(fp);
     std::wstring msg = L"报告已导出: " + wpath;
     setStatus(msg.c_str());
-}
-
-static bool isSuspiciousThreat(const std::string& threat) {
-    return threat.find("[启发式]") != std::string::npos;
 }
 
 // ============ 系统集成工具函数 ============
@@ -276,24 +277,10 @@ static void updateDatabaseAsync() {
     }).detach();
 }
 
-// ============ 未来风绘制 ============
+// ---------- 简洁绘制 ----------
 
-// 绘制盾牌图标（白色，带霓虹光晕）
+// 盾牌图标（白色简约）
 static void drawShield(HDC hdc, int x, int y, int size) {
-    // 光晕层（青）
-    HPEN glow = CreatePen(PS_SOLID, S(6), CLR_NEON);
-    HGDIOBJ oGlow = SelectObject(hdc, glow);
-    MoveToEx(hdc, x, y - size / 2, NULL);
-    LineTo(hdc, x + size / 2, y - size / 3);
-    LineTo(hdc, x + size / 2, y + size / 6);
-    LineTo(hdc, x + size / 3, y + size / 3);
-    LineTo(hdc, x, y + size / 2);
-    LineTo(hdc, x - size / 3, y + size / 3);
-    LineTo(hdc, x - size / 2, y + size / 6);
-    LineTo(hdc, x - size / 2, y - size / 3);
-    SelectObject(hdc, oGlow);
-    DeleteObject(glow);
-    // 主体（白）
     HPEN pen = CreatePen(PS_SOLID, S(2), CLR_TEXT);
     HBRUSH br = CreateSolidBrush(CLR_TEXT);
     HGDIOBJ oldPen = SelectObject(hdc, pen);
@@ -310,8 +297,8 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     CloseFigure(hdc);
     EndPath(hdc);
     FillPath(hdc);
-    // 对勾（青）
-    HPEN checkPen = CreatePen(PS_SOLID, S(3), CLR_NEON);
+    // 对勾（强调蓝）
+    HPEN checkPen = CreatePen(PS_SOLID, S(3), CLR_ACCENT);
     SelectObject(hdc, checkPen);
     MoveToEx(hdc, x - size / 4, y, NULL);
     LineTo(hdc, x - size / 10, y + size / 5);
@@ -321,81 +308,28 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     DeleteObject(pen); DeleteObject(br); DeleteObject(checkPen);
 }
 
-// 网格背景（未来科技感）
-static void drawGrid(HDC hdc, const RECT& rc, int step) {
-    HPEN pen = CreatePen(PS_SOLID, 1, CLR_GRID);
+// 横幅：简单深色面板 + 底部细边框
+static void drawBanner(HDC hdc, int width) {
+    RECT full = { 0, 0, width, S(BANNER_H) };
+    HBRUSH bg = CreateSolidBrush(CLR_PANEL);
+    FillRect(hdc, &full, bg);
+    DeleteObject(bg);
+    // 底部边框
+    HPEN pen = CreatePen(PS_SOLID, 1, CLR_BORDER);
     HGDIOBJ old = SelectObject(hdc, pen);
-    for (int x = rc.left; x < rc.right; x += step) {
-        MoveToEx(hdc, x, rc.top, NULL);
-        LineTo(hdc, x, rc.bottom);
-    }
-    for (int y = rc.top; y < rc.bottom; y += step) {
-        MoveToEx(hdc, rc.left, y, NULL);
-        LineTo(hdc, rc.right, y);
-    }
+    MoveToEx(hdc, 0, S(BANNER_H) - 1, NULL);
+    LineTo(hdc, width, S(BANNER_H) - 1);
     SelectObject(hdc, old);
     DeleteObject(pen);
 }
 
-// 横幅霓虹渐变背景（深青 -> 深蓝 -> 深紫 纵向）+ 底部发光带 + 网格
-static void drawBanner(HDC hdc, int width) {
-    RECT full = { 0, 0, width, S(BANNER_H) };
-    // 纵向渐变背景
-    for (int y = 0; y < S(BANNER_H); ++y) {
-        double t = (double)y / S(BANNER_H);
-        int r, g2, b2;
-        if (t < 0.5) {
-            double u = t * 2;
-            r = (int)((0x0E) * (1 - u) + (0x16) * u);
-            g2 = (int)((0x2A) * (1 - u) + (0x20) * u);
-            b2 = (int)((0x4A) * (1 - u) + (0x4A) * u);
-        } else {
-            double u = (t - 0.5) * 2;
-            r = (int)((0x16) * (1 - u) + (0x2A) * u);
-            g2 = (int)((0x20) * (1 - u) + (0x1B) * u);
-            b2 = (int)((0x4A) * (1 - u) + (0x4E) * u);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
-        HGDIOBJ old = SelectObject(hdc, pen);
-        MoveToEx(hdc, 0, y, NULL);
-        LineTo(hdc, width, y);
-        SelectObject(hdc, old);
-        DeleteObject(pen);
-    }
-    // 网格（淡）
-    drawGrid(hdc, full, S(24));
-    // 底部霓虹渐变光带（青 -> 电蓝 -> 紫，发光）
-    for (int x = 0; x < width; ++x) {
-        double t = (double)x / width;
-        int r, g2, b2;
-        if (t < 0.5) {
-            double u = t * 2;
-            r = (int)(GetRValue(CLR_NEON) * (1 - u) + GetRValue(CLR_NEON2) * u);
-            g2 = (int)(GetGValue(CLR_NEON) * (1 - u) + GetGValue(CLR_NEON2) * u);
-            b2 = (int)(GetBValue(CLR_NEON) * (1 - u) + GetBValue(CLR_NEON2) * u);
-        } else {
-            double u = (t - 0.5) * 2;
-            r = (int)(GetRValue(CLR_NEON2) * (1 - u) + GetRValue(CLR_PURPLE) * u);
-            g2 = (int)(GetGValue(CLR_NEON2) * (1 - u) + GetGValue(CLR_PURPLE) * u);
-            b2 = (int)(GetBValue(CLR_NEON2) * (1 - u) + GetBValue(CLR_PURPLE) * u);
-        }
-        HPEN pen = CreatePen(PS_SOLID, S(2), RGB(r, g2, b2));
-        HGDIOBJ old = SelectObject(hdc, pen);
-        MoveToEx(hdc, x, S(BANNER_H) - S(2), NULL);
-        LineTo(hdc, x, S(BANNER_H));
-        SelectObject(hdc, old);
-        DeleteObject(pen);
-    }
-}
-
-// 绘制渐变进度条（青 -> 紫，带右端发光点）
+// 进度条：深色轨道 + 蓝色填充（简洁）
 static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
-    // 轨道（深色圆角）
-    HPEN trackPen = CreatePen(PS_SOLID, 1, RGB(0x1E, 0x28, 0x42));
-    HBRUSH trackBr = CreateSolidBrush(CLR_PANEL);
+    HPEN trackPen = CreatePen(PS_SOLID, 1, CLR_BORDER);
+    HBRUSH trackBr = CreateSolidBrush(CLR_BTN);
     HGDIOBJ oP = SelectObject(hdc, trackPen);
     HGDIOBJ oB = SelectObject(hdc, trackBr);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, S(6), S(6));
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, S(4), S(4));
     SelectObject(hdc, oP);
     SelectObject(hdc, oB);
     DeleteObject(trackPen);
@@ -403,57 +337,17 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
 
     if (progress <= 0) return;
     int barW = (int)((rc.right - rc.left) * progress / 10000.0);
-    if (barW < S(6)) barW = S(6);
-    // 渐变填充（青 -> 电蓝 -> 紫，横向）
-    for (int x = rc.left + S(1); x < rc.left + barW - S(1); ++x) {
-        double t = (double)(x - rc.left) / (rc.right - rc.left);
-        int r, g2, b2;
-        if (t < 0.5) {
-            double u = t * 2;
-            r = (int)(GetRValue(CLR_NEON) * (1 - u) + GetRValue(CLR_NEON2) * u);
-            g2 = (int)(GetGValue(CLR_NEON) * (1 - u) + GetGValue(CLR_NEON2) * u);
-            b2 = (int)(GetBValue(CLR_NEON) * (1 - u) + GetBValue(CLR_NEON2) * u);
-        } else {
-            double u = (t - 0.5) * 2;
-            r = (int)(GetRValue(CLR_NEON2) * (1 - u) + GetRValue(CLR_PURPLE) * u);
-            g2 = (int)(GetGValue(CLR_NEON2) * (1 - u) + GetGValue(CLR_PURPLE) * u);
-            b2 = (int)(GetBValue(CLR_NEON2) * (1 - u) + GetBValue(CLR_PURPLE) * u);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
-        HGDIOBJ old = SelectObject(hdc, pen);
-        MoveToEx(hdc, x, rc.top + S(1), NULL);
-        LineTo(hdc, x, rc.bottom - S(1));
-        SelectObject(hdc, old);
-        DeleteObject(pen);
-    }
-    // 右端发光点
-    int endX = rc.left + barW - S(1);
-    HBRUSH glow = CreateSolidBrush(CLR_NEON);
-    HPEN gp = CreatePen(PS_SOLID, 1, CLR_NEON);
-    oP = SelectObject(hdc, gp);
-    oB = SelectObject(hdc, glow);
-    Ellipse(hdc, endX - S(3), rc.top + S(1), endX + S(4), rc.bottom - S(1));
+    if (barW < S(4)) barW = S(4);
+    HBRUSH fill = CreateSolidBrush(CLR_ACCENT);
+    HPEN fillPen = CreatePen(PS_SOLID, 1, CLR_ACCENT);
+    oP = SelectObject(hdc, fillPen);
+    oB = SelectObject(hdc, fill);
+    RoundRect(hdc, rc.left + S(1), rc.top + S(1),
+              rc.left + barW - S(1), rc.bottom - S(1), S(3), S(3));
     SelectObject(hdc, oP);
     SelectObject(hdc, oB);
-    DeleteObject(glow);
-    DeleteObject(gp);
-}
-
-// 发光文字：光晕层 + 清晰层
-static void drawGlowText(HDC hdc, const wchar_t* text, int x, int y, HFONT font,
-                         COLORREF glowColor, COLORREF textColor) {
-    SetBkMode(hdc, TRANSPARENT);
-    // 光晕层（偏移 4 方向）
-    HGDIOBJ oldFont = SelectObject(hdc, font);
-    SetTextColor(hdc, glowColor);
-    TextOutW(hdc, x - S(2), y, text, (int)wcslen(text));
-    TextOutW(hdc, x + S(2), y, text, (int)wcslen(text));
-    TextOutW(hdc, x, y - S(2), text, (int)wcslen(text));
-    TextOutW(hdc, x, y + S(2), text, (int)wcslen(text));
-    // 清晰层
-    SetTextColor(hdc, textColor);
-    TextOutW(hdc, x, y, text, (int)wcslen(text));
-    SelectObject(hdc, oldFont);
+    DeleteObject(fill);
+    DeleteObject(fillPen);
 }
 
 // ---------- 扫描线程 ----------
@@ -535,7 +429,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         UINT dpi = GetDpiForWindow(hwnd);
         g_scale = dpi / 96.0f;
 
-        g.hFontTitle = CreateFontW(S(28), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        g.hFontTitle = CreateFontW(S(26), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
         g.hFontStat = CreateFontW(S(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -548,9 +442,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
 
-        // 横幅：Logo（自绘）+ 统计数字控件（标题改为 WM_PAINT 自绘发光）
+        // 横幅：Logo + 标题（STATIC）+ 副标题 + 统计
         g.hLogo = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
                                 S(20), S(14), S(72), S(72), hwnd, (HMENU)IDC_LOGO, hInst, NULL);
+        HWND hTitle = CreateWindowW(L"STATIC", L"二伯杀毒 ErBaiAV", WS_CHILD | WS_VISIBLE,
+                                    S(100), S(20), S(320), S(34), hwnd, NULL, hInst, NULL);
+        HWND hSub = CreateWindowW(L"STATIC", L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
+                                  WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, NULL, hInst, NULL);
 
         g.hStatFiles = CreateWindowW(L"STATIC", L"0", WS_CHILD | WS_VISIBLE,
                                      S(520), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_FILES, hInst, NULL);
@@ -562,7 +460,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                     S(710), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_TIME, hInst, NULL);
         CreateWindowW(L"STATIC", L"用时", WS_CHILD | WS_VISIBLE, S(710), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
 
-        // 工作区控件（霓虹风格）
+        // 工作区
         CreateWindowW(L"STATIC", L"扫描目录:", WS_CHILD | WS_VISIBLE,
                       S(20), S(WORK_TOP), S(70), S(24), hwnd, NULL, hInst, NULL);
         g.hEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
@@ -579,7 +477,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                           S(20), S(WORK_TOP) + S(34), S(360), S(22), hwnd, (HMENU)IDC_HEURISTIC_CHECK, hInst, NULL);
         SendMessageW(g.hHeuristicCheck, BM_SETCHECK, BST_CHECKED, 0);
 
-        // 渐变进度条（自绘，区域占位）
+        // 进度条（自绘区域）
         g.progressRect = { S(20), S(WORK_TOP) + S(62), S(20) + S(700), S(WORK_TOP) + S(62) + S(12) };
         g.hProgress = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
                                     g.progressRect.left, g.progressRect.top,
@@ -591,9 +489,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                 LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                 S(20), S(WORK_TOP) + S(84), S(700), S(330), hwnd, (HMENU)IDC_LIST, hInst, NULL);
         ListView_SetExtendedListViewStyle(g.hList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
-        ListView_SetBkColor(g.hList, CLR_PANEL);
+        ListView_SetBkColor(g.hList, CLR_BG);
         ListView_SetTextColor(g.hList, CLR_TEXT);
-        ListView_SetTextBkColor(g.hList, CLR_PANEL);
+        ListView_SetTextBkColor(g.hList, CLR_BG);
         LVCOLUMNW col;
         col.mask = LVCF_TEXT | LVCF_WIDTH;
         col.cx = S(460);
@@ -618,6 +516,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                           GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
 
         // 字体
+        SetWindowFont(hTitle, g.hFontTitle, TRUE);
+        SetWindowFont(hSub, g.hFontStat, TRUE);
         SetWindowFont(g.hLogo, g.hFontBase, TRUE);
         SetWindowFont(g.hEdit, g.hFontBase, TRUE);
         SetWindowFont(g.hScanBtn, g.hFontBase, TRUE);
@@ -646,13 +546,38 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         wcscpy_s(nid.szTip, L"二伯杀毒 ErBaiAV");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        // USB 检测定时器
         SetTimer(hwnd, 1, 5000, NULL);
         return 0;
     }
 
     case WM_CLOSE: {
         ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        // 按钮悬停检测（简洁 hover 效果）
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int hover = -1;
+        HWND btns[] = { g.hScanBtn, g.hStopBtn, g.hBrowse,
+                        g.hQuarantineBtn, g.hTrustBtn, g.hQuarantineAllBtn, g.hReportBtn };
+        for (HWND h : btns) {
+            if (!h) continue;
+            RECT rc;
+            GetWindowRect(h, &rc);
+            POINT sp = pt;
+            ClientToScreen(hwnd, &sp);
+            if (PtInRect(&rc, sp) && IsWindowEnabled(h)) {
+                hover = GetDlgCtrlID(h);
+                break;
+            }
+        }
+        if (hover != g.hoverBtn) {
+            g.hoverBtn = hover;
+            for (HWND h : btns) {
+                if (h) InvalidateRect(h, NULL, TRUE);
+            }
+        }
         return 0;
     }
 
@@ -675,7 +600,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    case WM_APP + 9: {  // 托盘回调
+    case WM_APP + 9: {
         if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_LBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
@@ -717,7 +642,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    case WM_APP + 20: {  // 病毒库更新完成
+    case WM_APP + 20: {
         int code = (int)wParam;
         if (code == 0)
             MessageBoxW(hwnd, L"病毒库更新完成！请重启程序加载新签名。", L"二伯杀毒",
@@ -739,9 +664,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int id = GetDlgCtrlID(hCtrl);
         if (pt.y < S(BANNER_H)) {
             if (id == IDC_STAT_FILES || id == IDC_STAT_THREATS || id == IDC_STAT_TIME)
-                SetTextColor(hdc, CLR_NEON);       // 统计数字：霓虹青
+                SetTextColor(hdc, CLR_TEXT);       // 统计数字
+            else if (id == 0) { /* 标题或副标题 */ }
             else
-                SetTextColor(hdc, CLR_TEXT_DIM);   // 横幅次要文字
+                SetTextColor(hdc, CLR_TEXT_DIM);   // 统计标签
         } else {
             SetTextColor(hdc, CLR_TEXT);
         }
@@ -753,8 +679,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CTLCOLOREDIT: {
         HDC hdc = (HDC)wParam;
         SetTextColor(hdc, CLR_TEXT);
-        SetBkColor(hdc, CLR_PANEL);
-        static HBRUSH br = CreateSolidBrush(CLR_PANEL);
+        SetBkColor(hdc, CLR_INPUT);
+        static HBRUSH br = CreateSolidBrush(CLR_INPUT);
         return (LRESULT)br;
     }
 
@@ -764,25 +690,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        // 全窗口深色背景
         HBRUSH bg = CreateSolidBrush(CLR_BG);
         FillRect(hdc, &rc, bg);
         DeleteObject(bg);
 
-        // 横幅
         drawBanner(hdc, rc.right);
-
-        // 工作区网格
-        RECT work = { 0, S(BANNER_H), rc.right, rc.bottom };
-        drawGrid(hdc, work, S(32));
 
         // 渐变进度条
         drawProgressBar(hdc, g.progressRect, g.progress);
-
-        // 发光标题（自绘，替代 STATIC）
-        drawGlowText(hdc, L"二伯杀毒 ErBaiAV", S(100), S(22), g.hFontTitle, CLR_NEON, CLR_TEXT);
-        drawGlowText(hdc, L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析 · 实时防护",
-                     S(100), S(58), g.hFontStat, RGB(0x4D, 0x9F, 0xFF), CLR_TEXT_DIM);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -791,48 +706,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlType == ODT_BUTTON) {
-            // 渐变霓虹按钮：青 -> 电蓝 横向渐变
+            // 简洁深色按钮
             HDC hdc = dis->hDC;
             RECT rc = dis->rcItem;
             bool disabled = (dis->itemState & ODS_DISABLED) != 0;
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
             bool focused = (dis->itemState & ODS_FOCUS) != 0;
+            int id = dis->CtlID;
+            bool hover = (g.hoverBtn == id);
 
-            if (disabled) {
-                HBRUSH bg = CreateSolidBrush(RGB(0x1C, 0x22, 0x33));
-                HPEN pen = CreatePen(PS_SOLID, 1, RGB(0x2A, 0x35, 0x4D));
-                HGDIOBJ oPen = SelectObject(hdc, pen);
-                HGDIOBJ oBr = SelectObject(hdc, bg);
-                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
-                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
-                DeleteObject(bg); DeleteObject(pen);
-            } else {
-                // 渐变背景（青 #00A8E8 -> 蓝 #4D7FFF，按下时反向往深）
-                for (int x = rc.left + 1; x < rc.right - 1; ++x) {
-                    double t = (double)(x - rc.left) / (rc.right - rc.left);
-                    int r, g2, b2;
-                    int c1r = pressed ? 0x2D : 0x00, c1g = pressed ? 0x6B : 0xA8, c1b = pressed ? 0x9E : 0xE8;
-                    int c2r = pressed ? 0x1E : 0x4D, c2g = pressed ? 0x4A : 0x7F, c2b = pressed ? 0x8F : 0xFF;
-                    r = (int)(c1r * (1 - t) + c2r * t);
-                    g2 = (int)(c1g * (1 - t) + c2g * t);
-                    b2 = (int)(c1b * (1 - t) + c2b * t);
-                    HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
-                    HGDIOBJ old = SelectObject(hdc, pen);
-                    MoveToEx(hdc, x, rc.top + 1, NULL);
-                    LineTo(hdc, x, rc.bottom - 1);
-                    SelectObject(hdc, old);
-                    DeleteObject(pen);
-                }
-                // 边框（聚焦紫色）
-                HPEN pen = CreatePen(PS_SOLID, focused ? S(2) : S(1),
-                                     focused ? CLR_PURPLE : CLR_BTN_BORDER);
-                HGDIOBJ oPen = SelectObject(hdc, pen);
-                HGDIOBJ oBr = SelectObject(hdc, (HBRUSH)GetStockObject(NULL_BRUSH));
-                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
-                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
-                DeleteObject(pen);
-            }
-            // 文字
+            COLORREF bgClr = disabled ? CLR_BTN_DIS : (pressed ? CLR_ACCENT : (hover ? CLR_BTN_HOV : CLR_BTN));
+            COLORREF bdClr = disabled ? CLR_BORDER : (focused ? CLR_ACCENT_HI : (pressed ? CLR_ACCENT_HI : CLR_BORDER));
+            HBRUSH bg = CreateSolidBrush(bgClr);
+            HPEN pen = CreatePen(PS_SOLID, 1, bdClr);
+            HGDIOBJ oPen = SelectObject(hdc, pen);
+            HGDIOBJ oBr = SelectObject(hdc, bg);
+            RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(6), S(6));
+            SelectObject(hdc, oPen);
+            SelectObject(hdc, oBr);
+            DeleteObject(bg);
+            DeleteObject(pen);
+
             wchar_t buf[64];
             GetWindowTextW(dis->hwndItem, buf, 64);
             SetTextColor(hdc, disabled ? CLR_TEXT_DIM : CLR_TEXT);
@@ -861,13 +755,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (idx >= 0 && idx < (int)g.results.size() && g.results[idx].infected) {
                     if (isSuspiciousThreat(g.results[idx].threat)) {
                         cd->clrTextBk = CLR_SUSP;
-                        cd->clrText = RGB(0x0B, 0x0F, 0x1A);
+                        cd->clrText = CLR_BG;
                     } else {
                         cd->clrTextBk = CLR_THREAT;
-                        cd->clrText = RGB(0x0B, 0x0F, 0x1A);
+                        cd->clrText = CLR_BG;
                     }
                 } else {
-                    cd->clrTextBk = CLR_PANEL;
+                    cd->clrTextBk = CLR_BG;
                     cd->clrText = CLR_TEXT;
                 }
                 return CDRF_NEWFONT;
@@ -911,7 +805,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             EnableWindow(g.hQuarantineBtn, FALSE);
             EnableWindow(g.hTrustBtn, FALSE);
             EnableWindow(g.hQuarantineAllBtn, FALSE);
-            setStatus(L"● 扫描中...");
+            setStatus(L"扫描中...");
             SetWindowTextW(g.hStatTime, L"...");
             SetWindowTextW(g.hStatThreats, L"0");
 
@@ -1022,7 +916,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         EnableWindow(g.hScanBtn, TRUE);
         EnableWindow(g.hStopBtn, FALSE);
         if (g.scanThread.joinable()) g.scanThread.join();
-        // 完成进度条（若正常完成到 100%%）
         if (!g.stopRequested) { g.progress = 10000; InvalidateRect(hwnd, &g.progressRect, TRUE); }
         ULONGLONG elapsed = (GetTickCount64() - g.scanStartTime) / 1000;
         wchar_t buf[32];
