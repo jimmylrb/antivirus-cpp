@@ -1,6 +1,6 @@
-// gui.cpp — 二伯杀毒 ErBaiAV 图形界面 v3（DPI 感知，高分屏清晰）
-// 深色横幅 + 品牌渐变 + 威胁分级着色 + 扫描统计 + 启发式检测
-// v3: 声明 Per-Monitor DPI 感知，所有控件按 DPI 缩放，彻底解决高分屏模糊
+// gui.cpp — 二伯杀毒 ErBaiAV 图形界面 v5（未来科幻风）
+// 深色霓虹主题：发光文字 + 网格背景 + 霓虹按钮 + 发光进度条
+// 保留全部功能：并行扫描/白名单/拖拽/报告/全隔离/托盘/自启/右键/USB/自动更新
 
 #define UNICODE
 #define _UNICODE
@@ -24,27 +24,31 @@
 #include "quarantine.h"
 #include "whitelist.h"
 
-// 启用 ComCtl32 v6 视觉样式（现代控件外观）
+// 启用 ComCtl32 v6 视觉样式
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 using namespace av;
 
-// ============ 主题色 ============
-#define CLR_BANNER_1  RGB(0x2D, 0x9C, 0xDB)
-#define CLR_BANNER_2  RGB(0x5B, 0x4F, 0xCF)
-#define CLR_BANNER_3  RGB(0x8B, 0x5C, 0xF6)
-#define CLR_ACCENT    RGB(0x00, 0xC8, 0xFF)
-#define CLR_TEXT_ON_BANNER RGB(255, 255, 255)
-#define CLR_THREAT    RGB(0xFF, 0x6B, 0x6B)
-#define CLR_SUSPICIOUS RGB(0xFF, 0xA9, 0x4D)
-#define CLR_PANEL_BG  RGB(0xF5, 0xF7, 0xFA)
-#define CLR_BAR       RGB(0x00, 0xB8, 0xE6)
+// ============ 未来霓虹主题色 ============
+#define CLR_BG        RGB(0x0B, 0x0F, 0x1A)   // 深蓝黑背景
+#define CLR_PANEL     RGB(0x11, 0x17, 0x26)   // 面板
+#define CLR_GRID      RGB(0x1A, 0x24, 0x3C)   // 网格线
+#define CLR_NEON      RGB(0x00, 0xF0, 0xFF)   // 霓虹青
+#define CLR_NEON2     RGB(0x4D, 0x9F, 0xFF)   // 电蓝
+#define CLR_PURPLE    RGB(0xA8, 0x55, 0xF7)   // 霓虹紫
+#define CLR_TEXT      RGB(0xE0, 0xEA, 0xFF)   // 主文字（浅蓝白）
+#define CLR_TEXT_DIM  RGB(0x6B, 0x7A, 0x99)   // 次要文字
+#define CLR_THREAT    RGB(0xFF, 0x45, 0x6B)   // 霓虹红
+#define CLR_SUSP      RGB(0xFF, 0x9F, 0x43)   // 霓虹橙
+#define CLR_CLEAN     RGB(0x2E, 0xFF, 0x8F)   // 霓虹绿
+#define CLR_BTN_BORDER RGB(0x00, 0xC8, 0xFF)  // 按钮边框
 
-// 布局（逻辑像素 96 DPI，运行时按 g_scale 缩放）
+// 布局（逻辑像素 96 DPI）
 #define BANNER_H     100
 #define WORK_TOP     (BANNER_H + 12)
 
@@ -74,7 +78,7 @@ enum {
 };
 
 // ============ DPI 缩放 ============
-static float g_scale = 1.0f;   // 96 DPI 为基准
+static float g_scale = 1.0f;
 static int S(int v) { return (int)(v * g_scale + 0.5f); }
 
 struct AppState {
@@ -82,7 +86,7 @@ struct AppState {
     HWND hScanBtn, hStopBtn, hQuarantineBtn, hHeuristicCheck;
     HWND hTrustBtn, hQuarantineAllBtn, hReportBtn;
     HWND hStatFiles, hStatThreats, hStatTime, hLogo;
-    HFONT hFontTitle, hFontBig, hFontBase, hFontStat, hFontStatNum;
+    HFONT hFontTitle, hFontBase, hFontStat, hFontStatNum;
     std::vector<ScanResult> results;
     std::thread scanThread;
     std::atomic<bool> scanning{false};
@@ -136,7 +140,6 @@ static bool isSuspiciousThreat(const std::string& threat);  // 前向声明
 // 导出扫描报告（HTML）
 static void exportReport(const wchar_t* path) {
     std::wstring wpath = path;
-    // 如果没指定扩展名，补 .html
     if (wpath.find(L".html") == std::wstring::npos &&
         wpath.find(L".htm") == std::wstring::npos)
         wpath += L".html";
@@ -149,16 +152,16 @@ static void exportReport(const wchar_t* path) {
     char timebuf[64];
     strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-    fprintf(fp, "<!DOCTYPE html><html><head><meta charset='utf-8'><title>BlockAV 扫描报告</title>");
-    fprintf(fp, "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:30px;color:#333}"
-                "h1{color:#2D9CDB}table{border-collapse:collapse;width:100%%;margin-top:15px}"
-                "th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}"
-                "th{background:#2D9CDB;color:#fff}tr:nth-child(even){background:#f5f7fa}"
-                ".threat{color:#e74c3c;font-weight:bold}.susp{color:#e67e22;font-weight:bold}"
-                ".clean{color:#27ae60}</style></head><body>");
-    fprintf(fp, "<h1>🛡️ 二伯杀毒 ErBaiAV 扫描报告</h1>");
-    fprintf(fp, "<p>生成时间: %s</p>", timebuf);
-    fprintf(fp, "<p>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
+    fprintf(fp, "<!DOCTYPE html><html><head><meta charset='utf-8'><title>二伯杀毒 扫描报告</title>");
+    fprintf(fp, "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:30px;color:#333;background:#0B0F1A}"
+                "h1{color:#00F0FF}table{border-collapse:collapse;width:100%%;margin-top:15px}"
+                "th,td{border:1px solid #333;padding:8px 12px;text-align:left}"
+                "th{background:#00F0FF;color:#0B0F1A}tr:nth-child(even){background:#111726}"
+                ".threat{color:#FF456B;font-weight:bold}.susp{color:#FF9F43;font-weight:bold}"
+                ".clean{color:#2EFF8F}</style></head><body>");
+    fprintf(fp, "<h1>🛡️ 二伯杀毒 扫描报告</h1>");
+    fprintf(fp, "<p style='color:#E0EAFF'>生成时间: %s</p>", timebuf);
+    fprintf(fp, "<p style='color:#E0EAFF'>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
             (unsigned long long)g.totalFiles,
             (unsigned long long)g.infectedCount,
             (unsigned long long)g.suspiciousCount);
@@ -168,20 +171,129 @@ static void exportReport(const wchar_t* path) {
         if (!r.infected) continue;
         n++;
         bool susp = isSuspiciousThreat(r.threat);
-        fprintf(fp, "<tr><td>%d</td><td>%s</td><td class='%s'>%s</td></tr>",
+        fprintf(fp, "<tr><td style='color:#6B7A99'>%d</td><td style='color:#E0EAFF'>%s</td><td class='%s'>%s</td></tr>",
                 n, r.path.c_str(), susp ? "susp" : "threat", r.threat.c_str());
     }
     if (n == 0) fprintf(fp, "<tr><td colspan='3' class='clean'>✅ 未发现威胁</td></tr>");
-    fprintf(fp, "</table><p style='color:#999;margin-top:30px'>由 BlockAV (C++ 杀毒引擎) 生成</p></body></html>");
+    fprintf(fp, "</table><p style='color:#6B7A99;margin-top:30px'>由二伯杀毒 (C++ 杀毒引擎) 生成</p></body></html>");
     fclose(fp);
     std::wstring msg = L"报告已导出: " + wpath;
     setStatus(msg.c_str());
 }
 
-// 绘制盾牌图标（矢量）
+static bool isSuspiciousThreat(const std::string& threat) {
+    return threat.find("[启发式]") != std::string::npos;
+}
+
+// ============ 系统集成工具函数 ============
+
+static std::wstring getExePath() {
+    wchar_t buf[MAX_PATH];
+    GetModuleFileNameW(NULL, buf, MAX_PATH);
+    return buf;
+}
+
+static void setAutoStart(bool enable) {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return;
+    if (enable) {
+        std::wstring cmd = L"\"" + getExePath() + L"\" --tray";
+        RegSetValueExW(key, L"BlockAV", 0, REG_SZ,
+                       (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueW(key, L"BlockAV");
+    }
+    RegCloseKey(key);
+}
+
+static bool isAutoStartEnabled() {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+    DWORD type = 0, size = 0;
+    LONG r = RegQueryValueExW(key, L"BlockAV", NULL, &type, NULL, &size);
+    RegCloseKey(key);
+    return r == ERROR_SUCCESS && size > 0;
+}
+
+static void registerShellContextMenu() {
+    std::wstring exe = getExePath();
+    std::wstring cmd = L"\"" + exe + L"\" --scan \"%1\"";
+    HKEY key;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\*\\shell\\BlockAVScan",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
+                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\*\\shell\\BlockAVScan\\command",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
+                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\BlockAVScan",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
+                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory\\shell\\BlockAVScan\\command",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
+                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+}
+
+static std::vector<std::wstring> getRemovableDrives() {
+    std::vector<std::wstring> drives;
+    DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (mask & (1 << i)) {
+            wchar_t root[4] = { (wchar_t)(L'A' + i), L':', L'\\', 0 };
+            if (GetDriveTypeW(root) == DRIVE_REMOVABLE)
+                drives.push_back(root);
+        }
+    }
+    return drives;
+}
+
+static void updateDatabaseAsync() {
+    std::thread([]() {
+        std::wstring exe = getExePath();
+        std::wstring dir = exe.substr(0, exe.find_last_of(L'\\'));
+        std::wstring cmd = L"cmd /c cd /d \"" + dir + L"\" && python update_database.py --daily";
+        int r = _wsystem(cmd.c_str());
+        PostMessageW(GetParent(g.hList), WM_APP + 20, (WPARAM)r, 0);
+    }).detach();
+}
+
+// ============ 未来风绘制 ============
+
+// 绘制盾牌图标（白色，带霓虹光晕）
 static void drawShield(HDC hdc, int x, int y, int size) {
-    HPEN pen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
-    HBRUSH br = CreateSolidBrush(RGB(255, 255, 255));
+    // 光晕层（青）
+    HPEN glow = CreatePen(PS_SOLID, S(6), CLR_NEON);
+    HGDIOBJ oGlow = SelectObject(hdc, glow);
+    MoveToEx(hdc, x, y - size / 2, NULL);
+    LineTo(hdc, x + size / 2, y - size / 3);
+    LineTo(hdc, x + size / 2, y + size / 6);
+    LineTo(hdc, x + size / 3, y + size / 3);
+    LineTo(hdc, x, y + size / 2);
+    LineTo(hdc, x - size / 3, y + size / 3);
+    LineTo(hdc, x - size / 2, y + size / 6);
+    LineTo(hdc, x - size / 2, y - size / 3);
+    SelectObject(hdc, oGlow);
+    DeleteObject(glow);
+    // 主体（白）
+    HPEN pen = CreatePen(PS_SOLID, S(2), CLR_TEXT);
+    HBRUSH br = CreateSolidBrush(CLR_TEXT);
     HGDIOBJ oldPen = SelectObject(hdc, pen);
     HGDIOBJ oldBr = SelectObject(hdc, br);
     BeginPath(hdc);
@@ -196,7 +308,8 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     CloseFigure(hdc);
     EndPath(hdc);
     FillPath(hdc);
-    HPEN checkPen = CreatePen(PS_SOLID, S(3), CLR_BANNER_1);
+    // 对勾（青）
+    HPEN checkPen = CreatePen(PS_SOLID, S(3), CLR_NEON);
     SelectObject(hdc, checkPen);
     MoveToEx(hdc, x - size / 4, y, NULL);
     LineTo(hdc, x - size / 10, y + size / 5);
@@ -206,133 +319,69 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     DeleteObject(pen); DeleteObject(br); DeleteObject(checkPen);
 }
 
-// 横幅渐变背景
+// 网格背景（未来科技感）
+static void drawGrid(HDC hdc, const RECT& rc, int step) {
+    HPEN pen = CreatePen(PS_SOLID, 1, CLR_GRID);
+    HGDIOBJ old = SelectObject(hdc, pen);
+    for (int x = rc.left; x < rc.right; x += step) {
+        MoveToEx(hdc, x, rc.top, NULL);
+        LineTo(hdc, x, rc.bottom);
+    }
+    for (int y = rc.top; y < rc.bottom; y += step) {
+        MoveToEx(hdc, rc.left, y, NULL);
+        LineTo(hdc, rc.right, y);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(pen);
+}
+
+// 横幅霓虹渐变底（青 -> 电蓝 -> 紫）
 static void drawBanner(HDC hdc, int width) {
-    for (int y = 0; y < S(BANNER_H); ++y) {
-        double t = (double)y / S(BANNER_H);
-        int r, gg, b;
+    RECT full = { 0, 0, width, S(BANNER_H) };
+    HBRUSH bg = CreateSolidBrush(CLR_PANEL);
+    FillRect(hdc, &full, bg);
+    DeleteObject(bg);
+    // 网格（淡）
+    drawGrid(hdc, full, S(24));
+    // 底部霓虹渐变线
+    for (int x = 0; x < width; ++x) {
+        double t = (double)x / width;
+        int r, g2, b2;
         if (t < 0.5) {
             double u = t * 2;
-            r = (int)((GetRValue(CLR_BANNER_1) * (1 - u) + GetRValue(CLR_BANNER_2) * u));
-            gg = (int)((GetGValue(CLR_BANNER_1) * (1 - u) + GetGValue(CLR_BANNER_2) * u));
-            b = (int)((GetBValue(CLR_BANNER_1) * (1 - u) + GetBValue(CLR_BANNER_2) * u));
+            r = (int)(GetRValue(CLR_NEON) * (1 - u) + GetRValue(CLR_NEON2) * u);
+            g2 = (int)(GetGValue(CLR_NEON) * (1 - u) + GetGValue(CLR_NEON2) * u);
+            b2 = (int)(GetBValue(CLR_NEON) * (1 - u) + GetBValue(CLR_NEON2) * u);
         } else {
             double u = (t - 0.5) * 2;
-            r = (int)((GetRValue(CLR_BANNER_2) * (1 - u) + GetRValue(CLR_BANNER_3) * u));
-            gg = (int)((GetGValue(CLR_BANNER_2) * (1 - u) + GetGValue(CLR_BANNER_3) * u));
-            b = (int)((GetBValue(CLR_BANNER_2) * (1 - u) + GetBValue(CLR_BANNER_3) * u));
+            r = (int)(GetRValue(CLR_NEON2) * (1 - u) + GetRValue(CLR_PURPLE) * u);
+            g2 = (int)(GetGValue(CLR_NEON2) * (1 - u) + GetGValue(CLR_PURPLE) * u);
+            b2 = (int)(GetBValue(CLR_NEON2) * (1 - u) + GetBValue(CLR_PURPLE) * u);
         }
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, gg, b));
+        HPEN pen = CreatePen(PS_SOLID, S(2), RGB(r, g2, b2));
         HGDIOBJ old = SelectObject(hdc, pen);
-        MoveToEx(hdc, 0, y, NULL);
-        LineTo(hdc, width, y);
+        MoveToEx(hdc, x, S(BANNER_H) - S(2), NULL);
+        LineTo(hdc, x, S(BANNER_H));
         SelectObject(hdc, old);
         DeleteObject(pen);
     }
 }
 
-static bool isSuspiciousThreat(const std::string& threat) {
-    return threat.find("[启发式]") != std::string::npos;
-}
-
-// ============ 系统集成工具函数 ============
-
-// 获取 exe 完整路径
-static std::wstring getExePath() {
-    wchar_t buf[MAX_PATH];
-    GetModuleFileNameW(NULL, buf, MAX_PATH);
-    return buf;
-}
-
-// 开机自启（注册表 HKCU Run）
-static void setAutoStart(bool enable) {
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                      0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
-        return;
-    if (enable) {
-        std::wstring cmd = L"\"" + getExePath() + L"\" --tray";
-        RegSetValueExW(key, L"二伯杀毒", 0, REG_SZ,
-                       (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
-    } else {
-        RegDeleteValueW(key, L"二伯杀毒");
-    }
-    RegCloseKey(key);
-}
-
-static bool isAutoStartEnabled() {
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                      0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
-        return false;
-    DWORD type = 0, size = 0;
-    LONG r = RegQueryValueExW(key, L"二伯杀毒", NULL, &type, NULL, &size);
-    RegCloseKey(key);
-    return r == ERROR_SUCCESS && size > 0;
-}
-
-// 右键菜单集成（HKCU 无需管理员）：文件/文件夹右键 -> 用二伯杀毒扫描
-static void registerShellContextMenu() {
-    std::wstring exe = getExePath();
-    std::wstring cmd = L"\"" + exe + L"\" --scan \"%1\"";
-    // 文件
-    HKEY key;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-                        L"Software\\Classes\\*\\shell\\BlockAVScan",
-                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
-                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
-        RegCloseKey(key);
-    }
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-                        L"Software\\Classes\\*\\shell\\BlockAVScan\\command",
-                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
-                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
-        RegCloseKey(key);
-    }
-    // 文件夹
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-                        L"Software\\Classes\\Directory\\shell\\BlockAVScan",
-                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用二伯杀毒扫描",
-                       (DWORD)((wcslen(L"用二伯杀毒扫描") + 1) * sizeof(wchar_t)));
-        RegCloseKey(key);
-    }
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-                        L"Software\\Classes\\Directory\\shell\\BlockAVScan\\command",
-                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
-                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
-        RegCloseKey(key);
-    }
-}
-
-// USB 自动扫描：检测新增盘符
-static std::vector<std::wstring> getRemovableDrives() {
-    std::vector<std::wstring> drives;
-    DWORD mask = GetLogicalDrives();
-    for (int i = 0; i < 26; ++i) {
-        if (mask & (1 << i)) {
-            wchar_t root[4] = { (wchar_t)(L'A' + i), L':', L'\\', 0 };
-            if (GetDriveTypeW(root) == DRIVE_REMOVABLE)
-                drives.push_back(root);
-        }
-    }
-    return drives;
-}
-
-// 后台更新病毒库（调用 Python 脚本）
-static void updateDatabaseAsync() {
-    std::thread([]() {
-        std::wstring exe = getExePath();
-        std::wstring dir = exe.substr(0, exe.find_last_of(L'\\'));
-        std::wstring cmd = L"cmd /c cd /d \"" + dir + L"\" && python update_database.py --daily";
-        int r = _wsystem(cmd.c_str());
-        PostMessageW(GetParent(g.hList), WM_APP + 20, (WPARAM)r, 0);  // 更新完成通知
-    }).detach();
+// 发光文字：光晕层 + 清晰层
+static void drawGlowText(HDC hdc, const wchar_t* text, int x, int y, HFONT font,
+                         COLORREF glowColor, COLORREF textColor) {
+    SetBkMode(hdc, TRANSPARENT);
+    // 光晕层（偏移 4 方向）
+    HGDIOBJ oldFont = SelectObject(hdc, font);
+    SetTextColor(hdc, glowColor);
+    TextOutW(hdc, x - S(2), y, text, (int)wcslen(text));
+    TextOutW(hdc, x + S(2), y, text, (int)wcslen(text));
+    TextOutW(hdc, x, y - S(2), text, (int)wcslen(text));
+    TextOutW(hdc, x, y + S(2), text, (int)wcslen(text));
+    // 清晰层
+    SetTextColor(hdc, textColor);
+    TextOutW(hdc, x, y, text, (int)wcslen(text));
+    SelectObject(hdc, oldFont);
 }
 
 // ---------- 扫描线程 ----------
@@ -358,12 +407,10 @@ static void scanThreadFunc(const std::string& path) {
     size_t count = 0;
     HeuristicEngine heuristic;
 
-    // 并行扫描（特征库匹配），启发式在主线程回调里做
     g.scanner->scanDirectoryParallel(path, results, 0, [&](const ScanResult&) {
         count++;
         PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)count, 0);
     });
-    // 启发式二次检查（只对未命中特征库的文件）
     if (g.heuristicEnabled) {
         std::vector<ScanResult> heuHits;
         for (const auto& r : results) {
@@ -413,12 +460,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CREATE: {
         HINSTANCE hInst = GetModuleHandle(NULL);
 
-        // 获取 DPI，计算缩放系数
         UINT dpi = GetDpiForWindow(hwnd);
         g_scale = dpi / 96.0f;
 
-        // 字体（按 DPI 缩放字号）
-        g.hFontTitle = CreateFontW(S(26), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        g.hFontTitle = CreateFontW(S(28), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
         g.hFontStat = CreateFontW(S(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -431,15 +476,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
 
-        // 横幅 Logo + 标题 + 副标题
+        // 横幅：Logo（自绘）+ 统计数字控件（标题改为 WM_PAINT 自绘发光）
         g.hLogo = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
                                 S(20), S(14), S(72), S(72), hwnd, (HMENU)IDC_LOGO, hInst, NULL);
-        HWND hTitle = CreateWindowW(L"STATIC", L"二伯杀毒 ErBaiAV", WS_CHILD | WS_VISIBLE,
-                                    S(100), S(20), S(320), S(34), hwnd, NULL, hInst, NULL);
-        HWND hSub = CreateWindowW(L"STATIC", L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
-                                  WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, NULL, hInst, NULL);
 
-        // 统计数字
         g.hStatFiles = CreateWindowW(L"STATIC", L"0", WS_CHILD | WS_VISIBLE,
                                      S(520), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_FILES, hInst, NULL);
         CreateWindowW(L"STATIC", L"已扫描", WS_CHILD | WS_VISIBLE, S(520), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
@@ -450,16 +490,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                     S(710), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_TIME, hInst, NULL);
         CreateWindowW(L"STATIC", L"用时", WS_CHILD | WS_VISIBLE, S(710), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
 
-        // 工作区
+        // 工作区控件（霓虹风格）
         CreateWindowW(L"STATIC", L"扫描目录:", WS_CHILD | WS_VISIBLE,
                       S(20), S(WORK_TOP), S(70), S(24), hwnd, NULL, hInst, NULL);
         g.hEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                                 S(90), S(WORK_TOP) - S(2), S(380), S(28), hwnd, (HMENU)IDC_PATH_EDIT, hInst, NULL);
-        g.hScanBtn = CreateWindowW(L"BUTTON", L"开始扫描", WS_CHILD | WS_VISIBLE,
+        g.hScanBtn = CreateWindowW(L"BUTTON", L"开始扫描", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                    S(480), S(WORK_TOP) - S(2), S(100), S(28), hwnd, (HMENU)IDC_SCAN_BTN, hInst, NULL);
-        g.hStopBtn = CreateWindowW(L"BUTTON", L"停止", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        g.hStopBtn = CreateWindowW(L"BUTTON", L"停止", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                    S(585), S(WORK_TOP) - S(2), S(60), S(28), hwnd, (HMENU)IDC_STOP_BTN, hInst, NULL);
-        g.hBrowse = CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE,
+        g.hBrowse = CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                   S(650), S(WORK_TOP) - S(2), S(70), S(28), hwnd, (HMENU)IDC_BROWSE, hInst, NULL);
 
         g.hHeuristicCheck = CreateWindowW(L"BUTTON", L"启用启发式检测（识别未知可疑文件）",
@@ -470,13 +510,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g.hProgress = CreateWindowW(PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
                                     S(20), S(WORK_TOP) + S(62), S(700), S(12), hwnd, (HMENU)IDC_PROGRESS, hInst, NULL);
         SendMessageW(g.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 10000));
-        SendMessageW(g.hProgress, PBM_SETBARCOLOR, 0, (LPARAM)CLR_BAR);
-        SendMessageW(g.hProgress, PBM_SETBKCOLOR, 0, (LPARAM)RGB(0xE2, 0xE8, 0xF0));
+        SendMessageW(g.hProgress, PBM_SETBARCOLOR, 0, (LPARAM)CLR_NEON);
+        SendMessageW(g.hProgress, PBM_SETBKCOLOR, 0, (LPARAM)CLR_PANEL);
 
         g.hList = CreateWindowW(WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_BORDER |
                                 LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                 S(20), S(WORK_TOP) + S(84), S(700), S(330), hwnd, (HMENU)IDC_LIST, hInst, NULL);
         ListView_SetExtendedListViewStyle(g.hList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
+        ListView_SetBkColor(g.hList, CLR_PANEL);
+        ListView_SetTextColor(g.hList, CLR_TEXT);
+        ListView_SetTextBkColor(g.hList, CLR_PANEL);
         LVCOLUMNW col;
         col.mask = LVCF_TEXT | LVCF_WIDTH;
         col.cx = S(460);
@@ -486,25 +529,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         col.pszText = (LPWSTR)L"检测结果";
         ListView_InsertColumn(g.hList, 1, &col);
 
-        g.hQuarantineBtn = CreateWindowW(L"BUTTON", L"隔离选中", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        g.hQuarantineBtn = CreateWindowW(L"BUTTON", L"隔离选中", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                          S(20), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_QUARANTINE_BTN, hInst, NULL);
-        g.hTrustBtn = CreateWindowW(L"BUTTON", L"信任选中", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        g.hTrustBtn = CreateWindowW(L"BUTTON", L"信任选中", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                     S(125), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_TRUST_BTN, hInst, NULL);
-        g.hQuarantineAllBtn = CreateWindowW(L"BUTTON", L"全部隔离", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        g.hQuarantineAllBtn = CreateWindowW(L"BUTTON", L"全部隔离", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                             S(230), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_QUARANTINE_ALL_BTN, hInst, NULL);
-        g.hReportBtn = CreateWindowW(L"BUTTON", L"导出报告", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        g.hReportBtn = CreateWindowW(L"BUTTON", L"导出报告", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                      S(335), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_REPORT_BTN, hInst, NULL);
         g.hStatus = CreateWindowW(L"STATIC", L"就绪 - 可选择目录或直接拖入文件", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
                                   S(440), S(WORK_TOP) + S(424), S(280), S(30), hwnd, (HMENU)IDC_STATUS, hInst, NULL);
 
-        // 拖拽支持
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                           GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
 
-        // 应用字体
+        // 字体
         SetWindowFont(g.hLogo, g.hFontBase, TRUE);
-        SetWindowFont(hTitle, g.hFontTitle, TRUE);
-        SetWindowFont(hSub, g.hFontStat, TRUE);
         SetWindowFont(g.hEdit, g.hFontBase, TRUE);
         SetWindowFont(g.hScanBtn, g.hFontBase, TRUE);
         SetWindowFont(g.hStopBtn, g.hFontBase, TRUE);
@@ -520,7 +560,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SetWindowFont(g.hStatThreats, g.hFontStatNum, TRUE);
         SetWindowFont(g.hStatTime, g.hFontStatNum, TRUE);
 
-        // 托盘图标（使用自定义 ErBaiAV.ico）
+        // 托盘图标
         NOTIFYICONDATAW nid = {0};
         nid.cbSize = sizeof(nid);
         nid.hWnd = hwnd;
@@ -532,23 +572,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         wcscpy_s(nid.szTip, L"二伯杀毒 ErBaiAV");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        // USB 检测定时器（每 5 秒检查新移动盘）
+        // USB 检测定时器
         SetTimer(hwnd, 1, 5000, NULL);
         return 0;
     }
 
     case WM_CLOSE: {
-        // 关闭按钮 -> 最小化到托盘（不退出）
         ShowWindow(hwnd, SW_HIDE);
         return 0;
     }
 
     case WM_TIMER: {
-        // USB 自动扫描：检测新增移动盘
         static std::vector<std::wstring> lastDrives;
         auto now = getRemovableDrives();
         if (!lastDrives.empty() && now.size() > lastDrives.size()) {
-            // 有新盘符插入 -> 自动扫描
             for (const auto& d : now) {
                 bool existed = false;
                 for (const auto& old : lastDrives)
@@ -564,15 +601,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    case WM_APP + 9: {  // 托盘图标回调
+    case WM_APP + 9: {  // 托盘回调
         if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_LBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, 11, L"显示主窗口");
             AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), 12,
-                        L"开机自启");
+            AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), 12, L"开机自启");
             AppendMenuW(menu, MF_STRING, 13, L"注册右键菜单（资源管理器扫描）");
             AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(menu, MF_STRING, 14, L"立即更新病毒库");
@@ -581,21 +617,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             SetForegroundWindow(hwnd);
             int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
             DestroyMenu(menu);
-            if (cmd == 11) {  // 显示
+            if (cmd == 11) {
                 ShowWindow(hwnd, SW_SHOW);
                 SetForegroundWindow(hwnd);
-            } else if (cmd == 12) {  // 开机自启开关
+            } else if (cmd == 12) {
                 setAutoStart(!isAutoStartEnabled());
                 MessageBoxW(hwnd, isAutoStartEnabled() ? L"已开启开机自启" : L"已关闭开机自启",
                             L"二伯杀毒", MB_OK | MB_ICONINFORMATION);
-            } else if (cmd == 13) {  // 注册右键菜单
+            } else if (cmd == 13) {
                 registerShellContextMenu();
                 MessageBoxW(hwnd, L"右键菜单已注册！\n现在可以在文件/文件夹上右键 -> 用二伯杀毒扫描",
                             L"二伯杀毒", MB_OK | MB_ICONINFORMATION);
-            } else if (cmd == 14) {  // 更新病毒库
+            } else if (cmd == 14) {
                 setStatus(L"正在更新病毒库（后台）...");
                 updateDatabaseAsync();
-            } else if (cmd == 15) {  // 退出
+            } else if (cmd == 15) {
                 NOTIFYICONDATAW nid = {0};
                 nid.cbSize = sizeof(nid);
                 nid.hWnd = hwnd;
@@ -626,15 +662,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         GetWindowRect(hCtrl, &rc);
         POINT pt = { rc.left, rc.top };
         ScreenToClient(hwnd, &pt);
+        int id = GetDlgCtrlID(hCtrl);
         if (pt.y < S(BANNER_H)) {
-            SetTextColor(hdc, CLR_TEXT_ON_BANNER);
-            SetBkMode(hdc, TRANSPARENT);
-            static HBRUSH br = (HBRUSH)GetStockObject(NULL_BRUSH);
-            return (LRESULT)br;
+            if (id == IDC_STAT_FILES || id == IDC_STAT_THREATS || id == IDC_STAT_TIME)
+                SetTextColor(hdc, CLR_NEON);       // 统计数字：霓虹青
+            else
+                SetTextColor(hdc, CLR_TEXT_DIM);   // 横幅次要文字
+        } else {
+            SetTextColor(hdc, CLR_TEXT);
         }
         SetBkMode(hdc, TRANSPARENT);
-        static HBRUSH br2 = (HBRUSH)GetStockObject(NULL_BRUSH);
-        return (LRESULT)br2;
+        static HBRUSH br = (HBRUSH)GetStockObject(NULL_BRUSH);
+        return (LRESULT)br;
+    }
+
+    case WM_CTLCOLOREDIT: {
+        HDC hdc = (HDC)wParam;
+        SetTextColor(hdc, CLR_TEXT);
+        SetBkColor(hdc, CLR_PANEL);
+        static HBRUSH br = CreateSolidBrush(CLR_PANEL);
+        return (LRESULT)br;
     }
 
     case WM_PAINT: {
@@ -642,17 +689,58 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
+
+        // 全窗口深色背景
+        HBRUSH bg = CreateSolidBrush(CLR_BG);
+        FillRect(hdc, &rc, bg);
+        DeleteObject(bg);
+
+        // 横幅
         drawBanner(hdc, rc.right);
-        RECT rcWork = { 0, S(BANNER_H), rc.right, rc.bottom };
-        HBRUSH work = CreateSolidBrush(CLR_PANEL_BG);
-        FillRect(hdc, &rcWork, work);
-        DeleteObject(work);
+
+        // 工作区网格
+        RECT work = { 0, S(BANNER_H), rc.right, rc.bottom };
+        drawGrid(hdc, work, S(32));
+
+        // 发光标题（自绘，替代 STATIC）
+        drawGlowText(hdc, L"二伯杀毒 ErBaiAV", S(100), S(22), g.hFontTitle, CLR_NEON, CLR_TEXT);
+        drawGlowText(hdc, L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析 · 实时防护",
+                     S(100), S(58), g.hFontStat, RGB(0x4D, 0x9F, 0xFF), CLR_TEXT_DIM);
+
         EndPaint(hwnd, &ps);
         return 0;
     }
 
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis->CtlType == ODT_BUTTON) {
+            // 霓虹按钮
+            HDC hdc = dis->hDC;
+            RECT rc = dis->rcItem;
+            bool disabled = (dis->itemState & ODS_DISABLED) != 0;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            bool focused = (dis->itemState & ODS_FOCUS) != 0;
+            // 背景
+            HBRUSH bg = CreateSolidBrush(pressed ? CLR_NEON2 : CLR_PANEL);
+            HPEN pen = CreatePen(PS_SOLID, pressed ? S(2) : S(1),
+                                 disabled ? RGB(0x2A, 0x35, 0x4D) : (focused ? CLR_PURPLE : CLR_BTN_BORDER));
+            HGDIOBJ oPen = SelectObject(hdc, pen);
+            HGDIOBJ oBr = SelectObject(hdc, bg);
+            RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
+            SelectObject(hdc, oPen);
+            SelectObject(hdc, oBr);
+            DeleteObject(bg);
+            DeleteObject(pen);
+            // 文字
+            wchar_t buf[64];
+            GetWindowTextW(dis->hwndItem, buf, 64);
+            SetTextColor(hdc, disabled ? CLR_TEXT_DIM : CLR_TEXT);
+            SetBkMode(hdc, TRANSPARENT);
+            RECT tr = rc;
+            if (pressed) { tr.top += 1; tr.left += 1; }
+            DrawTextW(hdc, buf, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            return TRUE;
+        }
         if (dis->CtlID == IDC_LOGO) {
             drawShield(dis->hDC, dis->rcItem.left + dis->rcItem.right / 2 - S(2),
                        dis->rcItem.top + dis->rcItem.bottom / 2 - S(2), S(52));
@@ -671,12 +759,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int idx = (int)cd->nmcd.dwItemSpec;
                 if (idx >= 0 && idx < (int)g.results.size() && g.results[idx].infected) {
                     if (isSuspiciousThreat(g.results[idx].threat)) {
-                        cd->clrTextBk = CLR_SUSPICIOUS;
-                        cd->clrText = RGB(255, 255, 255);
+                        cd->clrTextBk = CLR_SUSP;
+                        cd->clrText = RGB(0x0B, 0x0F, 0x1A);
                     } else {
                         cd->clrTextBk = CLR_THREAT;
-                        cd->clrText = RGB(255, 255, 255);
+                        cd->clrText = RGB(0x0B, 0x0F, 0x1A);
                     }
+                } else {
+                    cd->clrTextBk = CLR_PANEL;
+                    cd->clrText = CLR_TEXT;
                 }
                 return CDRF_NEWFONT;
             }
@@ -716,7 +807,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             EnableWindow(g.hScanBtn, FALSE);
             EnableWindow(g.hStopBtn, TRUE);
             EnableWindow(g.hQuarantineBtn, FALSE);
-            setStatus(L"扫描中...");
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            setStatus(L"● 扫描中...");
             SetWindowTextW(g.hStatTime, L"...");
             SetWindowTextW(g.hStatThreats, L"0");
 
@@ -743,7 +836,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         else if (id == IDC_TRUST_BTN) {
-            // 信任选中：加入白名单（按 MD5）
             int sel = ListView_GetNextItem(g.hList, -1, LVNI_SELECTED);
             if (sel >= 0 && sel < (int)g.results.size() && g.results[sel].infected) {
                 std::string md5 = Scanner::fileMd5(g.results[sel].path);
@@ -757,7 +849,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         else if (id == IDC_QUARANTINE_ALL_BTN) {
-            // 一键隔离所有威胁
             int done = 0, fail = 0;
             for (size_t i = 0; i < g.results.size(); ++i) {
                 if (!g.results[i].infected) continue;
@@ -777,8 +868,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             EnableWindow(g.hQuarantineBtn, FALSE);
         }
         else if (id == IDC_REPORT_BTN) {
-            // 导出报告（保存对话框）
-            wchar_t filename[MAX_PATH] = L"blockav_report.html";
+            wchar_t filename[MAX_PATH] = L"erbai_report.html";
             OPENFILENAMEW ofn = {0};
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hwnd;
@@ -794,14 +884,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_DROPFILES: {
-        // 拖拽文件/文件夹到窗口 -> 自动扫描
         HDROP hDrop = (HDROP)wParam;
         wchar_t path[MAX_PATH];
         if (DragQueryFileW(hDrop, 0, path, MAX_PATH) > 0) {
-            // 填充路径框
             SetWindowTextW(g.hEdit, path);
             DragFinish(hDrop);
-            // 自动开始扫描
             if (!g.scanning)
                 SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
         }
@@ -850,15 +937,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    case WM_DESTROY:
-        // 清理托盘图标和定时器
-        {
-            NOTIFYICONDATAW nid = {0};
-            nid.cbSize = sizeof(nid);
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            Shell_NotifyIconW(NIM_DELETE, &nid);
-        }
+    case WM_DESTROY: {
+        NOTIFYICONDATAW nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
         KillTimer(hwnd, 1);
         if (g.scanThread.joinable()) {
             g.stopRequested = true;
@@ -867,13 +951,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         PostQuitMessage(0);
         return 0;
     }
+    }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 // ---------- 入口 ----------
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdShow) {
-    // 解析命令行参数
     std::wstring cmdline = lpCmdLine ? lpCmdLine : L"";
     std::wstring scanPath;
     bool trayMode = false;
@@ -896,27 +980,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         }
     }
 
-    // 声明 Per-Monitor DPI 感知（解决高分屏模糊）—— 在创建窗口前调用
+    // Per-Monitor DPI 感知
     HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
-    BOOL dpiSetOk = FALSE;
     if (hUser32) {
         typedef BOOL(WINAPI* SetProcessDpiAwarenessContextFn)(HANDLE);
         SetProcessDpiAwarenessContextFn fn = (SetProcessDpiAwarenessContextFn)GetProcAddress(
             hUser32, "SetProcessDpiAwarenessContext");
-        if (fn) {
-            dpiSetOk = fn((HANDLE)-4);  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-        } else {
-            // 旧系统回退
+        if (fn) fn((HANDLE)-4);
+        else {
             typedef BOOL(WINAPI* SetProcessDPIAwareFn)();
             SetProcessDPIAwareFn fn2 = (SetProcessDPIAwareFn)GetProcAddress(hUser32, "SetProcessDPIAware");
-            if (fn2) { dpiSetOk = fn2(); }
+            if (fn2) fn2();
         }
     }
 
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_PROGRESS_CLASS | ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
 
-    // 创建窗口前先按主屏 DPI 初始化缩放系数（DPI 感知下窗口尺寸为物理像素）
     {
         HDC hdc = GetDC(NULL);
         if (hdc) {
@@ -952,13 +1032,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = (HBRUSH)CreateSolidBrush(CLR_BG);
     wc.lpszClassName = L"BlockAVWindow";
     wc.hIcon = (HICON)LoadImageW(NULL, L"ErBaiAV.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
     if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_SHIELD);
     RegisterClassW(&wc);
 
-    // 用 96 DPI 逻辑尺寸创建（DPI 感知下系统自动按物理像素渲染）
     HWND hwnd = CreateWindowW(L"BlockAVWindow", L"二伯杀毒 ErBaiAV",
                               WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
                               CW_USEDEFAULT, CW_USEDEFAULT,
@@ -971,12 +1050,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
-    // 命令行指定扫描路径（右键菜单调用）
     if (!scanPath.empty()) {
         SetWindowTextW(g.hEdit, scanPath.c_str());
         SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
     }
-    // 托盘模式：启动后隐藏到托盘
     if (trayMode && scanPath.empty()) {
         ShowWindow(hwnd, SW_HIDE);
     }
