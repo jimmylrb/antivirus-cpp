@@ -34,18 +34,20 @@
 
 using namespace av;
 
-// ============ 简洁深色主题（GitHub Dark） ============
-#define CLR_BG        RGB(0x0D, 0x11, 0x17)   // 窗口背景
-#define CLR_PANEL     RGB(0x16, 0x1B, 0x22)   // 面板/横幅
-#define CLR_BORDER    RGB(0x30, 0x36, 0x3D)   // 边框
-#define CLR_ACCENT    RGB(0x2F, 0x81, 0xF7)   // 强调蓝
+// ============ 深蓝紫彩色主题 ============
+#define CLR_BG        RGB(0x0F, 0x16, 0x26)   // 深蓝黑背景
+#define CLR_PANEL     RGB(0x1A, 0x24, 0x40)   // 深蓝面板
+#define CLR_BORDER    RGB(0x2E, 0x3D, 0x66)   // 蓝灰边框
+#define CLR_ACCENT    RGB(0x2F, 0x81, 0xF7)   // 主蓝
 #define CLR_ACCENT_HI RGB(0x58, 0xA6, 0xFF)   // 亮蓝
-#define CLR_TEXT      RGB(0xE6, 0xED, 0xF3)   // 主文字
-#define CLR_TEXT_DIM  RGB(0x8B, 0x94, 0x9E)   // 次要文字
-#define CLR_BTN       RGB(0x21, 0x26, 0x2D)   // 按钮底
-#define CLR_BTN_HOV   RGB(0x30, 0x36, 0x3D)   // 按钮悬停
-#define CLR_BTN_DIS   RGB(0x16, 0x1B, 0x22)   // 按钮禁用
-#define CLR_INPUT     RGB(0x0D, 0x11, 0x17)   // 输入框底
+#define CLR_PURPLE    RGB(0x6C, 0x5C, 0xE7)   // 紫
+#define CLR_CYAN      RGB(0x00, 0xD2, 0xFF)   // 青（点缀）
+#define CLR_TEXT      RGB(0xE8, 0xF0, 0xFF)   // 主文字（带蓝调白）
+#define CLR_TEXT_DIM  RGB(0x8A, 0x9B, 0xBD)   // 次要文字
+#define CLR_BTN       RGB(0x22, 0x2E, 0x50)   // 按钮底
+#define CLR_BTN_HOV   RGB(0x2E, 0x3D, 0x66)   // 按钮悬停
+#define CLR_BTN_DIS   RGB(0x1A, 0x24, 0x40)   // 按钮禁用
+#define CLR_INPUT     RGB(0x0F, 0x16, 0x26)   // 输入框底
 #define CLR_THREAT    RGB(0xF8, 0x51, 0x49)   // 威胁红
 #define CLR_SUSP      RGB(0xDB, 0x6E, 0x28)   // 可疑橙
 #define CLR_CLEAN     RGB(0x3F, 0xB9, 0x50)   // 干净绿
@@ -77,6 +79,8 @@ enum {
     IDC_STAT_THREATS,
     IDC_STAT_TIME,
     IDC_LOGO,
+    IDC_TITLE = 2001,
+    IDC_SUBTITLE = 2002,
 };
 
 // ============ DPI 缩放 ============
@@ -308,22 +312,46 @@ static void drawShield(HDC hdc, int x, int y, int size) {
     DeleteObject(pen); DeleteObject(br); DeleteObject(checkPen);
 }
 
-// 横幅：简单深色面板 + 底部细边框
+// 横幅：深蓝 -> 深紫 渐变 + 底部蓝色光带
 static void drawBanner(HDC hdc, int width) {
-    RECT full = { 0, 0, width, S(BANNER_H) };
-    HBRUSH bg = CreateSolidBrush(CLR_PANEL);
-    FillRect(hdc, &full, bg);
-    DeleteObject(bg);
-    // 底部边框
-    HPEN pen = CreatePen(PS_SOLID, 1, CLR_BORDER);
-    HGDIOBJ old = SelectObject(hdc, pen);
-    MoveToEx(hdc, 0, S(BANNER_H) - 1, NULL);
-    LineTo(hdc, width, S(BANNER_H) - 1);
-    SelectObject(hdc, old);
-    DeleteObject(pen);
+    // 纵向渐变（深蓝 #1A2440 -> 深紫 #251E47）
+    for (int y = 0; y < S(BANNER_H); ++y) {
+        double t = (double)y / S(BANNER_H);
+        int r = (int)(0x1A * (1 - t) + 0x25 * t);
+        int g2 = (int)(0x24 * (1 - t) + 0x1E * t);
+        int b2 = (int)(0x40 * (1 - t) + 0x47 * t);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, 0, y, NULL);
+        LineTo(hdc, width, y);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
+    // 底部蓝色渐变光带（蓝 -> 紫，低调）
+    for (int x = 0; x < width; ++x) {
+        double t = (double)x / width;
+        int r, g2, b2;
+        if (t < 0.5) {
+            double u = t * 2;
+            r = (int)(GetRValue(CLR_ACCENT) * (1 - u) + GetRValue(CLR_PURPLE) * u);
+            g2 = (int)(GetGValue(CLR_ACCENT) * (1 - u) + GetGValue(CLR_PURPLE) * u);
+            b2 = (int)(GetBValue(CLR_ACCENT) * (1 - u) + GetBValue(CLR_PURPLE) * u);
+        } else {
+            double u = (t - 0.5) * 2;
+            r = (int)(GetRValue(CLR_PURPLE) * (1 - u) + GetRValue(CLR_CYAN) * u);
+            g2 = (int)(GetGValue(CLR_PURPLE) * (1 - u) + GetGValue(CLR_CYAN) * u);
+            b2 = (int)(GetBValue(CLR_PURPLE) * (1 - u) + GetBValue(CLR_CYAN) * u);
+        }
+        HPEN pen = CreatePen(PS_SOLID, S(2), RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, x, S(BANNER_H) - S(2), NULL);
+        LineTo(hdc, x, S(BANNER_H));
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
 }
 
-// 进度条：深色轨道 + 蓝色填充（简洁）
+// 进度条：深色轨道 + 蓝->紫渐变填充
 static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
     HPEN trackPen = CreatePen(PS_SOLID, 1, CLR_BORDER);
     HBRUSH trackBr = CreateSolidBrush(CLR_BTN);
@@ -338,16 +366,19 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
     if (progress <= 0) return;
     int barW = (int)((rc.right - rc.left) * progress / 10000.0);
     if (barW < S(4)) barW = S(4);
-    HBRUSH fill = CreateSolidBrush(CLR_ACCENT);
-    HPEN fillPen = CreatePen(PS_SOLID, 1, CLR_ACCENT);
-    oP = SelectObject(hdc, fillPen);
-    oB = SelectObject(hdc, fill);
-    RoundRect(hdc, rc.left + S(1), rc.top + S(1),
-              rc.left + barW - S(1), rc.bottom - S(1), S(3), S(3));
-    SelectObject(hdc, oP);
-    SelectObject(hdc, oB);
-    DeleteObject(fill);
-    DeleteObject(fillPen);
+    // 蓝 -> 紫 渐变填充
+    for (int x = rc.left + S(1); x < rc.left + barW - S(1); ++x) {
+        double t = (double)(x - rc.left) / (rc.right - rc.left);
+        int r = (int)(GetRValue(CLR_ACCENT) * (1 - t) + GetRValue(CLR_PURPLE) * t);
+        int g2 = (int)(GetGValue(CLR_ACCENT) * (1 - t) + GetGValue(CLR_PURPLE) * t);
+        int b2 = (int)(GetBValue(CLR_ACCENT) * (1 - t) + GetBValue(CLR_PURPLE) * t);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, x, rc.top + S(1), NULL);
+        LineTo(hdc, x, rc.bottom - S(1));
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
 }
 
 // ---------- 扫描线程 ----------
@@ -446,9 +477,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g.hLogo = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
                                 S(20), S(14), S(72), S(72), hwnd, (HMENU)IDC_LOGO, hInst, NULL);
         HWND hTitle = CreateWindowW(L"STATIC", L"二伯杀毒 ErBaiAV", WS_CHILD | WS_VISIBLE,
-                                    S(100), S(20), S(320), S(34), hwnd, NULL, hInst, NULL);
+                                    S(100), S(20), S(320), S(34), hwnd, (HMENU)IDC_TITLE, hInst, NULL);
         HWND hSub = CreateWindowW(L"STATIC", L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
-                                  WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, NULL, hInst, NULL);
+                                  WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, (HMENU)IDC_SUBTITLE, hInst, NULL);
 
         g.hStatFiles = CreateWindowW(L"STATIC", L"0", WS_CHILD | WS_VISIBLE,
                                      S(520), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_FILES, hInst, NULL);
@@ -664,10 +695,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int id = GetDlgCtrlID(hCtrl);
         if (pt.y < S(BANNER_H)) {
             if (id == IDC_STAT_FILES || id == IDC_STAT_THREATS || id == IDC_STAT_TIME)
-                SetTextColor(hdc, CLR_TEXT);       // 统计数字
-            else if (id == 0) { /* 标题或副标题 */ }
+                SetTextColor(hdc, CLR_ACCENT_HI);      // 统计数字：亮蓝
+            else if (id == IDC_TITLE)
+                SetTextColor(hdc, CLR_TEXT);            // 标题：白
             else
-                SetTextColor(hdc, CLR_TEXT_DIM);   // 统计标签
+                SetTextColor(hdc, CLR_TEXT_DIM);        // 副标题/标签：灰蓝
         } else {
             SetTextColor(hdc, CLR_TEXT);
         }
@@ -717,15 +749,48 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             COLORREF bgClr = disabled ? CLR_BTN_DIS : (pressed ? CLR_ACCENT : (hover ? CLR_BTN_HOV : CLR_BTN));
             COLORREF bdClr = disabled ? CLR_BORDER : (focused ? CLR_ACCENT_HI : (pressed ? CLR_ACCENT_HI : CLR_BORDER));
-            HBRUSH bg = CreateSolidBrush(bgClr);
-            HPEN pen = CreatePen(PS_SOLID, 1, bdClr);
-            HGDIOBJ oPen = SelectObject(hdc, pen);
-            HGDIOBJ oBr = SelectObject(hdc, bg);
-            RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(6), S(6));
-            SelectObject(hdc, oPen);
-            SelectObject(hdc, oBr);
-            DeleteObject(bg);
-            DeleteObject(pen);
+
+            if (disabled) {
+                HBRUSH bg = CreateSolidBrush(bgClr);
+                HPEN pen = CreatePen(PS_SOLID, 1, bdClr);
+                HGDIOBJ oPen = SelectObject(hdc, pen);
+                HGDIOBJ oBr = SelectObject(hdc, bg);
+                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(6), S(6));
+                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
+                DeleteObject(bg); DeleteObject(pen);
+            } else if (id == IDC_SCAN_BTN) {
+                // 主按钮：蓝 -> 紫 渐变（低饱和，不刺眼）
+                for (int x = rc.left + 1; x < rc.right - 1; ++x) {
+                    double t = (double)(x - rc.left) / (rc.right - rc.left);
+                    int c1r = pressed ? 0x1F : 0x2F, c1g = pressed ? 0x5A : 0x81, c1b = pressed ? 0xC8 : 0xF7;
+                    int c2r = pressed ? 0x45 : 0x6C, c2g = pressed ? 0x3F : 0x5C, c2b = pressed ? 0xB8 : 0xE7;
+                    int r = (int)(c1r * (1 - t) + c2r * t);
+                    int g2 = (int)(c1g * (1 - t) + c2g * t);
+                    int b2 = (int)(c1b * (1 - t) + c2b * t);
+                    HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+                    HGDIOBJ old = SelectObject(hdc, pen);
+                    MoveToEx(hdc, x, rc.top + 1, NULL);
+                    LineTo(hdc, x, rc.bottom - 1);
+                    SelectObject(hdc, old);
+                    DeleteObject(pen);
+                }
+                HPEN pen = CreatePen(PS_SOLID, focused ? S(2) : S(1),
+                                     focused ? CLR_CYAN : CLR_ACCENT_HI);
+                HGDIOBJ oPen = SelectObject(hdc, pen);
+                HGDIOBJ oBr = SelectObject(hdc, (HBRUSH)GetStockObject(NULL_BRUSH));
+                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(6), S(6));
+                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
+                DeleteObject(pen);
+            } else {
+                // 普通按钮：深蓝底 + 蓝边框（悬停变亮）
+                HBRUSH bg = CreateSolidBrush(bgClr);
+                HPEN pen = CreatePen(PS_SOLID, 1, bdClr);
+                HGDIOBJ oPen = SelectObject(hdc, pen);
+                HGDIOBJ oBr = SelectObject(hdc, bg);
+                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(6), S(6));
+                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
+                DeleteObject(bg); DeleteObject(pen);
+            }
 
             wchar_t buf[64];
             GetWindowTextW(dis->hwndItem, buf, 64);
