@@ -112,6 +112,8 @@ struct AppState {
     std::wstring statFiles = L"0";   // 横幅自绘统计（避免透明控件残留重叠）
     std::wstring statThreats = L"0";
     std::wstring statTime = L"0s";
+    HDC hMemDC = NULL;                 // 缓存双缓冲（避免每帧重建大位图导致偶发闪烁）
+    HBITMAP hBmp = NULL;
 };
 
 static AppState g;
@@ -640,13 +642,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER: {
         if (wParam == 2) {
-            // 动画帧：只重绘光带 + 进度条两个细条区域（避免全窗口重绘导致闪烁）
+            // 动画帧：只重绘光带 + 进度条两个细条区域（窗口不可见时跳过，避免累积）
             g.animFrame++;
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            RECT band = { 0, S(BANNER_H) - S(5), rc.right, S(BANNER_H) };
-            InvalidateRect(hwnd, &band, FALSE);
-            InvalidateRect(hwnd, &g.progressRect, FALSE);
+            if (IsWindowVisible(hwnd)) {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                RECT band = { 0, S(BANNER_H) - S(5), rc.right, S(BANNER_H) };
+                InvalidateRect(hwnd, &band, FALSE);
+                InvalidateRect(hwnd, &g.progressRect, FALSE);
+            }
             return 0;
         }
         static std::vector<std::wstring> lastDrives;
@@ -730,6 +734,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return (LRESULT)br;
     }
 
+    case WM_CTLCOLORBTN: {
+        // 复选框（BS_AUTOCHECKBOX）深色背景 + 亮文字，消除系统重绘闪烁
+        HDC hdc = (HDC)wParam;
+        SetTextColor(hdc, CLR_TEXT);
+        SetBkColor(hdc, CLR_BG);
+        static HBRUSH br = CreateSolidBrush(CLR_BG);
+        return (LRESULT)br;
+    }
+
     case WM_CTLCOLOREDIT: {
         HDC hdc = (HDC)wParam;
         SetTextColor(hdc, CLR_TEXT);
@@ -748,10 +761,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        // 双缓冲：画背景层（背景色 + 横幅 + 进度条）
-        HDC memDC = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        HGDIOBJ oldBmp = SelectObject(memDC, bmp);
+        // 双缓冲（缓存位图，避免每帧重建大 DDB 导致偶发闪烁）
+        if (!g.hMemDC) {
+            g.hMemDC = CreateCompatibleDC(hdc);
+            g.hBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+            SelectObject(g.hMemDC, g.hBmp);
+        }
+        HDC memDC = g.hMemDC;
 
         HBRUSH bg = CreateSolidBrush(CLR_BG);
         FillRect(memDC, &rc, bg);
@@ -786,9 +802,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT pr = ps.rcPaint;
         BitBlt(hdc, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top,
                memDC, pr.left, pr.top, SRCCOPY);
-        SelectObject(memDC, oldBmp);
-        DeleteObject(bmp);
-        DeleteDC(memDC);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -1069,9 +1082,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         nid.uID = 1;
         Shell_NotifyIconW(NIM_DELETE, &nid);
         KillTimer(hwnd, 1);
+        KillTimer(hwnd, 2);
         if (g.scanThread.joinable()) {
             g.stopRequested = true;
             g.scanThread.join();
+        }
+        if (g.hMemDC) {
+            DeleteDC(g.hMemDC);
+            if (g.hBmp) DeleteObject(g.hBmp);
+            g.hMemDC = NULL;
+            g.hBmp = NULL;
         }
         PostQuitMessage(0);
         return 0;
