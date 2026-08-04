@@ -27,6 +27,7 @@
 #include "whitelist.h"
 #include "yara.h"
 #include "process.h"
+#include "tools.h"
 
 namespace fs = std::filesystem;
 
@@ -48,7 +49,8 @@ static void printUsage() {
         "  blockav whitelist --add <文件>     将文件加入白名单（信任，不再报警）\n"
         "  blockav whitelist --remove <MD5>   从白名单移除\n"
         "  blockav yara <规则.yar> <文件/目录> 用 YARA 规则扫描\n"
-        "  blockav process  	扫描运行中的进程（特征库+可疑识别）          列出隔离区\n"
+        "  blockav process                     扫描运行中的进程（特征库+可疑识别）\n"
+        "  blockav quarantine --list           列出隔离区\n"
         "  blockav quarantine --restore <文件> 从隔离区恢复\n"
         "  blockav info                       显示已加载签名统计\n";
 }
@@ -278,6 +280,65 @@ int main(int argc, char* argv[]) {
                       << " " << r.path << " -> " << r.threat << std::endl;
         }
         return results.empty() ? 0 : 2;
+    }
+    else if (cmd == "tools") {
+        if (argc < 3) {
+            std::cout << "用法: blockav tools <drives|junk|startup|net|apps|shred <文件>>" << std::endl;
+            return 0;
+        }
+        std::string sub = argv[2];
+        if (sub == "drives") {
+            auto drv = av::allDrivePaths();
+            std::cout << "[盘符] 发现 " << drv.size() << " 个磁盘:" << std::endl;
+            for (auto& d : drv) std::cout << "  " << av::toNarrow(d) << std::endl;
+        }
+        else if (sub == "junk") {
+            std::vector<av::JunkItem> items;
+            av::collectJunkFiles(items);
+            std::cout << "[垃圾] 发现 " << items.size() << " 个可清理项:" << std::endl;
+            for (auto& it : items)
+                std::cout << "  [" << av::toNarrow(it.category) << "] " << av::toNarrow(it.path) << std::endl;
+            bool clean = false;
+            for (int i = 3; i < argc; ++i) if (std::string(argv[i]) == "--clean") clean = true;
+            if (clean) {
+                int ok = 0;
+                for (auto& it : items) if (av::deleteJunkPath(it.path)) ok++;
+                std::cout << "[清理] 成功删除 " << ok << "/" << items.size() << " 项" << std::endl;
+            }
+        }
+        else if (sub == "startup") {
+            std::vector<av::StartupItem> items;
+            av::collectStartupItems(items);
+            std::cout << "[启动项] 发现 " << items.size() << " 个:" << std::endl;
+            for (auto& it : items)
+                std::cout << "  [" << av::toNarrow(it.location) << "] " << av::toNarrow(it.name)
+                          << " -> " << av::toNarrow(it.command) << std::endl;
+        }
+        else if (sub == "net") {
+            auto conns = av::collectNetConnections();
+            std::cout << "[网络] 活动连接 " << conns.size() << " 条:" << std::endl;
+            for (auto& c : conns) {
+                std::cout << "  " << av::toNarrow(c.proto) << " " << av::toNarrow(c.local)
+                          << " -> " << av::toNarrow(c.remote) << " " << av::toNarrow(c.state)
+                          << " [" << c.pid << " " << av::toNarrow(c.procName) << "]" << std::endl;
+            }
+        }
+        else if (sub == "apps") {
+            std::vector<av::InstalledApp> apps;
+            av::collectInstalledApps(apps);
+            std::cout << "[软件] 已安装 " << apps.size() << " 个:" << std::endl;
+            for (auto& a : apps) {
+                std::cout << "  " << av::toNarrow(a.name);
+                if (!a.version.empty()) std::cout << " v" << av::toNarrow(a.version);
+                if (!a.publisher.empty()) std::cout << " (" << av::toNarrow(a.publisher) << ")";
+                std::cout << std::endl;
+            }
+        }
+        else if (sub == "shred" && argc >= 4) {
+            bool ok = av::shredFile(av::aToW(argv[3]));
+            std::cout << "[粉碎] " << (ok ? "成功" : "失败") << ": " << argv[3] << std::endl;
+        }
+        return 0;
     }
     else if (cmd == "help" || cmd == "-h" || cmd == "--help") {
         printUsage();
