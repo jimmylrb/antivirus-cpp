@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include "scanner.h"
+#include "heuristic.h"
 #include "quarantine.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -35,6 +36,7 @@ enum {
     IDC_SCAN_BTN,
     IDC_STOP_BTN,
     IDC_QUARANTINE_BTN,
+    IDC_HEURISTIC_CHECK,
     IDC_PROGRESS,
     IDC_LIST,
     IDC_STATUS,
@@ -42,11 +44,12 @@ enum {
 
 struct AppState {
     HWND hEdit, hBrowse, hProgress, hList, hStatus;
-    HWND hScanBtn, hStopBtn, hQuarantineBtn;
+    HWND hScanBtn, hStopBtn, hQuarantineBtn, hHeuristicCheck;
     std::vector<ScanResult> results;
     std::thread scanThread;
     std::atomic<bool> scanning{false};
     std::atomic<bool> stopRequested{false};
+    std::atomic<bool> heuristicEnabled{true};  // 默认启用启发式
     Scanner* scanner = nullptr;
     Quarantine* quarantine = nullptr;
     size_t totalFiles = 0;
@@ -111,13 +114,58 @@ static void scanThreadFunc(const std::string& path) {
     g.totalFiles = total;
     PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)0, 0);
 
-    // 扫描
+    // 手动遍历扫描：特征库匹配 + 启发式检测
     std::vector<ScanResult> results;
     size_t count = 0;
-    g.scanner->scanDirectory(path, results, [&](const ScanResult&) {
+    HeuristicEngine heuristic;
+
+    auto processFile = [&](const std::filesystem::path& fpath) {
+        if (g.stopRequested) return;
         count++;
         PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)count, 0);
-    });
+
+        // 1) 特征库扫描
+        ScanResult r;
+        g.scanner->scanFile(fpath, r);
+        if (r.infected) {
+            results.push_back(r);
+            return;
+        }
+        // 2) 启发式检测（识别未知可疑文件）
+        if (g.heuristicEnabled) {
+            std::error_code ec;
+            auto size = std::filesystem::file_size(fpath, ec);
+            if (ec || size == 0 || size > 8 * 1024 * 1024) return;  // 限制文件大小
+            std::ifstream f(fpath, std::ios::binary);
+            if (!f) return;
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            if (data.size() > 2 * 1024 * 1024) data.resize(2 * 1024 * 1024);
+            auto hr = heuristic.analyze(fpath.string(), data);
+            if (hr.level == HeuristicLevel::Malicious || hr.level == HeuristicLevel::Suspicious) {
+                r.infected = true;
+                // 标记为启发式发现，附上原因
+                std::string reasons;
+                for (size_t i = 0; i < hr.reasons.size() && i < 2; ++i) {
+                    if (!reasons.empty()) reasons += " | ";
+                    reasons += hr.reasons[i];
+                }
+                r.threat = std::string("[启发式]") + (hr.level == HeuristicLevel::Malicious ? "高风险" : "可疑") +
+                           " (评分" + std::to_string(hr.score) + ") " + reasons;
+                results.push_back(r);
+            }
+        }
+    };
+
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        for (auto it = std::filesystem::recursive_directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
+             it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) { ec.clear(); continue; }
+            if (it->is_regular_file(ec)) processFile(it->path());
+        }
+    } else if (std::filesystem::is_regular_file(path, ec)) {
+        processFile(path);
+    }
     g.results = results;
 
     // 发送威胁和完成消息
@@ -150,13 +198,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g.hBrowse = CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE,
                                   635, 10, 70, 26, hwnd, (HMENU)IDC_BROWSE, hInst, NULL);
 
+        // 启发式检测复选框（默认勾选）
+        g.hHeuristicCheck = CreateWindowW(L"BUTTON", L"启用启发式检测（识别未知可疑文件）",
+                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                          10, 68, 330, 22, hwnd, (HMENU)IDC_HEURISTIC_CHECK, hInst, NULL);
+        SendMessageW(g.hHeuristicCheck, BM_SETCHECK, BST_CHECKED, 0);
+
         g.hProgress = CreateWindowW(PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
                                     10, 45, 695, 20, hwnd, (HMENU)IDC_PROGRESS, hInst, NULL);
         SendMessageW(g.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 10000));
 
         g.hList = CreateWindowW(WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_BORDER |
                                 LVS_REPORT | LVS_SINGLESEL,
-                                10, 75, 695, 380, hwnd, (HMENU)IDC_LIST, hInst, NULL);
+                                10, 95, 695, 360, hwnd, (HMENU)IDC_LIST, hInst, NULL);
         ListView_SetExtendedListViewStyle(g.hList, LVS_EX_FULLROWSELECT);
         LVCOLUMNW col;
         col.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -197,6 +251,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"请先选择扫描目录", L"提示", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
+            // 读取启发式开关状态
+            g.heuristicEnabled = (SendMessageW(g.hHeuristicCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             ListView_DeleteAllItems(g.hList);
             g.results.clear();
             g.infectedCount = 0;
