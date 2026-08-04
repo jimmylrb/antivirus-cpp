@@ -109,6 +109,9 @@ struct AppState {
     RECT progressRect = {0,0,0,0};
     int hoverBtn = -1;              // 当前悬停的按钮 ID（-1=无）
     int animFrame = 0;              // 动画帧计数
+    std::wstring statFiles = L"0";   // 横幅自绘统计（避免透明控件残留重叠）
+    std::wstring statThreats = L"0";
+    std::wstring statTime = L"0s";
 };
 
 static AppState g;
@@ -514,23 +517,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
 
-        // 横幅：Logo + 标题（STATIC）+ 副标题 + 统计
+        // 横幅：Logo（自绘）+ 标题/副标题/统计数字全部 WM_PAINT 自绘（防透明控件文字残留）
         g.hLogo = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
                                 S(20), S(14), S(72), S(72), hwnd, (HMENU)IDC_LOGO, hInst, NULL);
-        HWND hTitle = CreateWindowW(L"STATIC", L"二伯杀毒 ErBaiAV", WS_CHILD | WS_VISIBLE,
-                                    S(100), S(20), S(320), S(34), hwnd, (HMENU)IDC_TITLE, hInst, NULL);
-        HWND hSub = CreateWindowW(L"STATIC", L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
-                                  WS_CHILD | WS_VISIBLE, S(100), S(56), S(420), S(22), hwnd, (HMENU)IDC_SUBTITLE, hInst, NULL);
-
-        g.hStatFiles = CreateWindowW(L"STATIC", L"0", WS_CHILD | WS_VISIBLE,
-                                     S(520), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_FILES, hInst, NULL);
-        CreateWindowW(L"STATIC", L"已扫描", WS_CHILD | WS_VISIBLE, S(520), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
-        g.hStatThreats = CreateWindowW(L"STATIC", L"0", WS_CHILD | WS_VISIBLE,
-                                       S(615), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_THREATS, hInst, NULL);
-        CreateWindowW(L"STATIC", L"威胁", WS_CHILD | WS_VISIBLE, S(615), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
-        g.hStatTime = CreateWindowW(L"STATIC", L"0s", WS_CHILD | WS_VISIBLE,
-                                    S(710), S(16), S(70), S(36), hwnd, (HMENU)IDC_STAT_TIME, hInst, NULL);
-        CreateWindowW(L"STATIC", L"用时", WS_CHILD | WS_VISIBLE, S(710), S(58), S(70), S(20), hwnd, NULL, hInst, NULL);
 
         // 工作区
         CreateWindowW(L"STATIC", L"扫描目录:", WS_CHILD | WS_VISIBLE,
@@ -588,8 +577,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                           GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
 
         // 字体
-        SetWindowFont(hTitle, g.hFontTitle, TRUE);
-        SetWindowFont(hSub, g.hFontStat, TRUE);
         SetWindowFont(g.hLogo, g.hFontBase, TRUE);
         SetWindowFont(g.hEdit, g.hFontBase, TRUE);
         SetWindowFont(g.hScanBtn, g.hFontBase, TRUE);
@@ -602,9 +589,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SetWindowFont(g.hQuarantineAllBtn, g.hFontBase, TRUE);
         SetWindowFont(g.hReportBtn, g.hFontBase, TRUE);
         SetWindowFont(g.hStatus, g.hFontBase, TRUE);
-        SetWindowFont(g.hStatFiles, g.hFontStatNum, TRUE);
-        SetWindowFont(g.hStatThreats, g.hFontStatNum, TRUE);
-        SetWindowFont(g.hStatTime, g.hFontStatNum, TRUE);
 
         // 托盘图标
         NOTIFYICONDATAW nid = {0};
@@ -740,23 +724,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam;
         HWND hCtrl = (HWND)lParam;
-        RECT rc;
-        GetWindowRect(hCtrl, &rc);
-        POINT pt = { rc.left, rc.top };
-        ScreenToClient(hwnd, &pt);
-        int id = GetDlgCtrlID(hCtrl);
-        if (pt.y < S(BANNER_H)) {
-            if (id == IDC_STAT_FILES || id == IDC_STAT_THREATS || id == IDC_STAT_TIME)
-                SetTextColor(hdc, CLR_ACCENT_HI);      // 统计数字：亮蓝
-            else if (id == IDC_TITLE)
-                SetTextColor(hdc, CLR_TEXT);            // 标题：白
-            else
-                SetTextColor(hdc, CLR_TEXT_DIM);        // 副标题/标签：灰蓝
-        } else {
-            SetTextColor(hdc, CLR_TEXT);
-        }
-        SetBkMode(hdc, TRANSPARENT);
-        static HBRUSH br = (HBRUSH)GetStockObject(NULL_BRUSH);
+        SetTextColor(hdc, CLR_TEXT);
+        SetBkColor(hdc, CLR_BG);
+        static HBRUSH br = CreateSolidBrush(CLR_BG);
         return (LRESULT)br;
     }
 
@@ -789,6 +759,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         drawBanner(memDC, rc.right);
         drawProgressBar(memDC, g.progressRect, g.progress);
+
+        // ---- 横幅文字自绘（避免透明 STATIC 残留重叠）----
+        SetBkMode(memDC, TRANSPARENT);
+        // 标题
+        HGDIOBJ oldF = SelectObject(memDC, g.hFontTitle);
+        SetTextColor(memDC, CLR_TEXT);
+        TextOutW(memDC, S(100), S(20), L"二伯杀毒 ErBaiAV", (int)wcslen(L"二伯杀毒 ErBaiAV"));
+        SelectObject(memDC, g.hFontStat);
+        SetTextColor(memDC, CLR_TEXT_DIM);
+        TextOutW(memDC, S(100), S(56), L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析", 34);
+        // 统计数字（亮蓝）+ 标签
+        SelectObject(memDC, g.hFontStatNum);
+        SetTextColor(memDC, CLR_ACCENT_HI);
+        TextOutW(memDC, S(520), S(14), g.statFiles.c_str(), (int)g.statFiles.size());
+        TextOutW(memDC, S(615), S(14), g.statThreats.c_str(), (int)g.statThreats.size());
+        TextOutW(memDC, S(710), S(14), g.statTime.c_str(), (int)g.statTime.size());
+        SelectObject(memDC, g.hFontStat);
+        SetTextColor(memDC, CLR_TEXT_DIM);
+        TextOutW(memDC, S(520), S(58), L"已扫描", 3);
+        TextOutW(memDC, S(615), S(58), L"威胁", 2);
+        TextOutW(memDC, S(710), S(58), L"用时", 2);
+        SelectObject(memDC, oldF);
 
         // 只拷贝失效区域（动画时只重绘光带/进度条，子控件不被触碰 -> 不闪烁）
         RECT pr = ps.rcPaint;
@@ -938,8 +930,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             EnableWindow(g.hTrustBtn, FALSE);
             EnableWindow(g.hQuarantineAllBtn, FALSE);
             setStatus(L"扫描中...");
-            SetWindowTextW(g.hStatTime, L"...");
-            SetWindowTextW(g.hStatThreats, L"0");
+            g.statTime = L"...";
+            g.statThreats = L"0";
+            { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
 
             g.scanning = true;
             g.stopRequested = false;
@@ -1030,7 +1023,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         InvalidateRect(hwnd, &g.progressRect, TRUE);
         wchar_t buf[32];
         swprintf_s(buf, L"%llu", (unsigned long long)done);
-        SetWindowTextW(g.hStatFiles, buf);
+        g.statFiles = buf;
+        { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
         return 0;
     }
     case WM_SCAN_THREAT: {
@@ -1052,9 +1046,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         ULONGLONG elapsed = (GetTickCount64() - g.scanStartTime) / 1000;
         wchar_t buf[32];
         swprintf_s(buf, L"%llus", (unsigned long long)elapsed);
-        SetWindowTextW(g.hStatTime, buf);
+        g.statTime = buf;
         swprintf_s(buf, L"%llu", (unsigned long long)infected);
-        SetWindowTextW(g.hStatThreats, buf);
+        g.statThreats = buf;
+        { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
 
         std::wstring msg = L"扫描完成: " + std::to_wstring(total) + L" 个文件, 发现 " +
                            std::to_wstring(infected) + L" 个威胁" +
