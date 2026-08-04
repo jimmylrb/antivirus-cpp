@@ -30,7 +30,7 @@ env["LIB"] = ";".join([
 ])
 
 src = os.path.join(ROOT, "src", "main.cpp")
-out = os.path.join(ROOT, "blockav.exe")
+out = os.path.join(ROOT, "erbai_av.exe")
 
 cmd = [
     CL, "/nologo", "/std:c++17", "/O2", "/EHsc", "/W3", "/utf-8",
@@ -48,6 +48,6 @@ if r.returncode != 0:
 
 print("[DONE] generated", out)
 print("Usage:")
-print("  blockav.exe update database")
-print("  blockav.exe scan <path> --heu")
-print("  blockav.exe quarantine --list")
+print("  erbai_av.exe update database")
+print("  erbai_av.exe scan <path> --heu")
+print("  erbai_av.exe quarantine --list")
