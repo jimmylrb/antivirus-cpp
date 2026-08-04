@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shlobj.h>
@@ -21,12 +22,14 @@
 #include "scanner.h"
 #include "heuristic.h"
 #include "quarantine.h"
+#include "whitelist.h"
 
 // 启用 ComCtl32 v6 视觉样式（现代控件外观）
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "shell32.lib")
 
 using namespace av;
 
@@ -57,6 +60,9 @@ enum {
     IDC_SCAN_BTN,
     IDC_STOP_BTN,
     IDC_QUARANTINE_BTN,
+    IDC_TRUST_BTN,
+    IDC_QUARANTINE_ALL_BTN,
+    IDC_REPORT_BTN,
     IDC_HEURISTIC_CHECK,
     IDC_PROGRESS,
     IDC_LIST,
@@ -74,6 +80,7 @@ static int S(int v) { return (int)(v * g_scale + 0.5f); }
 struct AppState {
     HWND hEdit, hBrowse, hProgress, hList, hStatus;
     HWND hScanBtn, hStopBtn, hQuarantineBtn, hHeuristicCheck;
+    HWND hTrustBtn, hQuarantineAllBtn, hReportBtn;
     HWND hStatFiles, hStatThreats, hStatTime, hLogo;
     HFONT hFontTitle, hFontBig, hFontBase, hFontStat, hFontStatNum;
     std::vector<ScanResult> results;
@@ -83,6 +90,7 @@ struct AppState {
     std::atomic<bool> heuristicEnabled{true};
     Scanner* scanner = nullptr;
     Quarantine* quarantine = nullptr;
+    Whitelist* whitelist = nullptr;
     size_t totalFiles = 0;
     size_t infectedCount = 0;
     size_t suspiciousCount = 0;
@@ -121,6 +129,53 @@ static void addListItem(const wchar_t* col1, const wchar_t* col2) {
 
 static void setStatus(const wchar_t* text) {
     SetWindowTextW(g.hStatus, text);
+}
+
+static bool isSuspiciousThreat(const std::string& threat);  // 前向声明
+
+// 导出扫描报告（HTML）
+static void exportReport(const wchar_t* path) {
+    std::wstring wpath = path;
+    // 如果没指定扩展名，补 .html
+    if (wpath.find(L".html") == std::wstring::npos &&
+        wpath.find(L".htm") == std::wstring::npos)
+        wpath += L".html";
+    FILE* fp = _wfopen(wpath.c_str(), L"w, ccs=UTF-8");
+    if (!fp) {
+        MessageBoxW(NULL, L"无法创建报告文件", L"错误", MB_OK | MB_ICONERROR);
+        return;
+    }
+    time_t now = time(NULL);
+    char timebuf[64];
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    fprintf(fp, "<!DOCTYPE html><html><head><meta charset='utf-8'><title>BlockAV 扫描报告</title>");
+    fprintf(fp, "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:30px;color:#333}"
+                "h1{color:#2D9CDB}table{border-collapse:collapse;width:100%%;margin-top:15px}"
+                "th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}"
+                "th{background:#2D9CDB;color:#fff}tr:nth-child(even){background:#f5f7fa}"
+                ".threat{color:#e74c3c;font-weight:bold}.susp{color:#e67e22;font-weight:bold}"
+                ".clean{color:#27ae60}</style></head><body>");
+    fprintf(fp, "<h1>🛡️ 方块杀毒 BlockAV 扫描报告</h1>");
+    fprintf(fp, "<p>生成时间: %s</p>", timebuf);
+    fprintf(fp, "<p>扫描文件: %llu | 发现威胁: %llu | 启发式可疑: %llu</p>",
+            (unsigned long long)g.totalFiles,
+            (unsigned long long)g.infectedCount,
+            (unsigned long long)g.suspiciousCount);
+    fprintf(fp, "<table><tr><th>#</th><th>文件</th><th>检测结果</th></tr>");
+    int n = 0;
+    for (const auto& r : g.results) {
+        if (!r.infected) continue;
+        n++;
+        bool susp = isSuspiciousThreat(r.threat);
+        fprintf(fp, "<tr><td>%d</td><td>%s</td><td class='%s'>%s</td></tr>",
+                n, r.path.c_str(), susp ? "susp" : "threat", r.threat.c_str());
+    }
+    if (n == 0) fprintf(fp, "<tr><td colspan='3' class='clean'>✅ 未发现威胁</td></tr>");
+    fprintf(fp, "</table><p style='color:#999;margin-top:30px'>由 BlockAV (C++ 杀毒引擎) 生成</p></body></html>");
+    fclose(fp);
+    std::wstring msg = L"报告已导出: " + wpath;
+    setStatus(msg.c_str());
 }
 
 // 绘制盾牌图标（矢量）
@@ -180,6 +235,106 @@ static bool isSuspiciousThreat(const std::string& threat) {
     return threat.find("[启发式]") != std::string::npos;
 }
 
+// ============ 系统集成工具函数 ============
+
+// 获取 exe 完整路径
+static std::wstring getExePath() {
+    wchar_t buf[MAX_PATH];
+    GetModuleFileNameW(NULL, buf, MAX_PATH);
+    return buf;
+}
+
+// 开机自启（注册表 HKCU Run）
+static void setAutoStart(bool enable) {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return;
+    if (enable) {
+        std::wstring cmd = L"\"" + getExePath() + L"\" --tray";
+        RegSetValueExW(key, L"BlockAV", 0, REG_SZ,
+                       (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueW(key, L"BlockAV");
+    }
+    RegCloseKey(key);
+}
+
+static bool isAutoStartEnabled() {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+    DWORD type = 0, size = 0;
+    LONG r = RegQueryValueExW(key, L"BlockAV", NULL, &type, NULL, &size);
+    RegCloseKey(key);
+    return r == ERROR_SUCCESS && size > 0;
+}
+
+// 右键菜单集成（HKCU 无需管理员）：文件/文件夹右键 -> 用 BlockAV 扫描
+static void registerShellContextMenu() {
+    std::wstring exe = getExePath();
+    std::wstring cmd = L"\"" + exe + L"\" --scan \"%1\"";
+    // 文件
+    HKEY key;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Classes\\*\\shell\\BlockAVScan",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用 BlockAV 扫描",
+                       (DWORD)((wcslen(L"用 BlockAV 扫描") + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Classes\\*\\shell\\BlockAVScan\\command",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
+                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    // 文件夹
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Classes\\Directory\\shell\\BlockAVScan",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)L"用 BlockAV 扫描",
+                       (DWORD)((wcslen(L"用 BlockAV 扫描") + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Classes\\Directory\\shell\\BlockAVScan\\command",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(key, NULL, 0, REG_SZ, (const BYTE*)cmd.c_str(),
+                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+}
+
+// USB 自动扫描：检测新增盘符
+static std::vector<std::wstring> getRemovableDrives() {
+    std::vector<std::wstring> drives;
+    DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (mask & (1 << i)) {
+            wchar_t root[4] = { (wchar_t)(L'A' + i), L':', L'\\', 0 };
+            if (GetDriveTypeW(root) == DRIVE_REMOVABLE)
+                drives.push_back(root);
+        }
+    }
+    return drives;
+}
+
+// 后台更新病毒库（调用 Python 脚本）
+static void updateDatabaseAsync() {
+    std::thread([]() {
+        std::wstring exe = getExePath();
+        std::wstring dir = exe.substr(0, exe.find_last_of(L'\\'));
+        std::wstring cmd = L"cmd /c cd /d \"" + dir + L"\" && python update_database.py --daily";
+        int r = _wsystem(cmd.c_str());
+        PostMessageW(GetParent(g.hList), WM_APP + 20, (WPARAM)r, 0);  // 更新完成通知
+    }).detach();
+}
+
 // ---------- 扫描线程 ----------
 
 static void scanThreadFunc(const std::string& path) {
@@ -203,49 +358,38 @@ static void scanThreadFunc(const std::string& path) {
     size_t count = 0;
     HeuristicEngine heuristic;
 
-    auto processFile = [&](const std::filesystem::path& fpath) {
-        if (g.stopRequested) return;
+    // 并行扫描（特征库匹配），启发式在主线程回调里做
+    g.scanner->scanDirectoryParallel(path, results, 0, [&](const ScanResult&) {
         count++;
         PostMessageW(GetParent(g.hList), WM_SCAN_PROGRESS, (WPARAM)count, 0);
-
-        ScanResult r;
-        g.scanner->scanFile(fpath, r);
-        if (r.infected) {
-            results.push_back(r);
-            return;
-        }
-        if (g.heuristicEnabled) {
+    });
+    // 启发式二次检查（只对未命中特征库的文件）
+    if (g.heuristicEnabled) {
+        std::vector<ScanResult> heuHits;
+        for (const auto& r : results) {
+            if (g.stopRequested) break;
+            if (r.infected) continue;
             std::error_code ec;
-            auto size = std::filesystem::file_size(fpath, ec);
-            if (ec || size == 0 || size > 8 * 1024 * 1024) return;
-            std::ifstream f(fpath, std::ios::binary);
-            if (!f) return;
+            auto size = std::filesystem::file_size(r.path, ec);
+            if (ec || size == 0 || size > 8 * 1024 * 1024) continue;
+            std::ifstream f(r.path, std::ios::binary);
+            if (!f) continue;
             std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             if (data.size() > 2 * 1024 * 1024) data.resize(2 * 1024 * 1024);
-            auto hr = heuristic.analyze(fpath.string(), data);
+            auto hr = heuristic.analyze(r.path, data);
             if (hr.level == HeuristicLevel::Malicious || hr.level == HeuristicLevel::Suspicious) {
-                r.infected = true;
+                ScanResult h = r;
                 std::string reasons;
                 for (size_t i = 0; i < hr.reasons.size() && i < 2; ++i) {
                     if (!reasons.empty()) reasons += " | ";
                     reasons += hr.reasons[i];
                 }
-                r.threat = std::string("[启发式]") + (hr.level == HeuristicLevel::Malicious ? "高风险" : "可疑") +
+                h.threat = std::string("[启发式]") + (hr.level == HeuristicLevel::Malicious ? "高风险" : "可疑") +
                            " (评分" + std::to_string(hr.score) + ") " + reasons;
-                results.push_back(r);
+                heuHits.push_back(h);
             }
         }
-    };
-
-    std::error_code ec;
-    if (std::filesystem::is_directory(path, ec)) {
-        for (auto it = std::filesystem::recursive_directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
-             it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            if (ec) { ec.clear(); continue; }
-            if (it->is_regular_file(ec)) processFile(it->path());
-        }
-    } else if (std::filesystem::is_regular_file(path, ec)) {
-        processFile(path);
+        results.insert(results.end(), heuHits.begin(), heuHits.end());
     }
     g.results = results;
 
@@ -344,8 +488,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         g.hQuarantineBtn = CreateWindowW(L"BUTTON", L"隔离选中", WS_CHILD | WS_VISIBLE | WS_DISABLED,
                                          S(20), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_QUARANTINE_BTN, hInst, NULL);
-        g.hStatus = CreateWindowW(L"STATIC", L"就绪 - 请选择要扫描的目录", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-                                  S(130), S(WORK_TOP) + S(424), S(590), S(30), hwnd, (HMENU)IDC_STATUS, hInst, NULL);
+        g.hTrustBtn = CreateWindowW(L"BUTTON", L"信任选中", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                                    S(125), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_TRUST_BTN, hInst, NULL);
+        g.hQuarantineAllBtn = CreateWindowW(L"BUTTON", L"全部隔离", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                                            S(230), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_QUARANTINE_ALL_BTN, hInst, NULL);
+        g.hReportBtn = CreateWindowW(L"BUTTON", L"导出报告", WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                                     S(335), S(WORK_TOP) + S(424), S(100), S(30), hwnd, (HMENU)IDC_REPORT_BTN, hInst, NULL);
+        g.hStatus = CreateWindowW(L"STATIC", L"就绪 - 可选择目录或直接拖入文件", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+                                  S(440), S(WORK_TOP) + S(424), S(280), S(30), hwnd, (HMENU)IDC_STATUS, hInst, NULL);
+
+        // 拖拽支持
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+                          GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
 
         // 应用字体
         SetWindowFont(g.hLogo, g.hFontBase, TRUE);
@@ -358,10 +512,109 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SetWindowFont(g.hHeuristicCheck, g.hFontBase, TRUE);
         SetWindowFont(g.hList, g.hFontBase, TRUE);
         SetWindowFont(g.hQuarantineBtn, g.hFontBase, TRUE);
+        SetWindowFont(g.hTrustBtn, g.hFontBase, TRUE);
+        SetWindowFont(g.hQuarantineAllBtn, g.hFontBase, TRUE);
+        SetWindowFont(g.hReportBtn, g.hFontBase, TRUE);
         SetWindowFont(g.hStatus, g.hFontBase, TRUE);
         SetWindowFont(g.hStatFiles, g.hFontStatNum, TRUE);
         SetWindowFont(g.hStatThreats, g.hFontStatNum, TRUE);
         SetWindowFont(g.hStatTime, g.hFontStatNum, TRUE);
+
+        // 托盘图标
+        NOTIFYICONDATAW nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_APP + 9;
+        nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
+        wcscpy_s(nid.szTip, L"方块杀毒 BlockAV");
+        Shell_NotifyIconW(NIM_ADD, &nid);
+
+        // USB 检测定时器（每 5 秒检查新移动盘）
+        SetTimer(hwnd, 1, 5000, NULL);
+        return 0;
+    }
+
+    case WM_CLOSE: {
+        // 关闭按钮 -> 最小化到托盘（不退出）
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+
+    case WM_TIMER: {
+        // USB 自动扫描：检测新增移动盘
+        static std::vector<std::wstring> lastDrives;
+        auto now = getRemovableDrives();
+        if (!lastDrives.empty() && now.size() > lastDrives.size()) {
+            // 有新盘符插入 -> 自动扫描
+            for (const auto& d : now) {
+                bool existed = false;
+                for (const auto& old : lastDrives)
+                    if (old == d) { existed = true; break; }
+                if (!existed && !g.scanning) {
+                    SetWindowTextW(g.hEdit, d.c_str());
+                    setStatus(L"检测到移动设备，自动扫描中...");
+                    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
+                }
+            }
+        }
+        lastDrives = now;
+        return 0;
+    }
+
+    case WM_APP + 9: {  // 托盘图标回调
+        if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_LBUTTONUP) {
+            POINT pt;
+            GetCursorPos(&pt);
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, 11, L"显示主窗口");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), 12,
+                        L"开机自启");
+            AppendMenuW(menu, MF_STRING, 13, L"注册右键菜单（资源管理器扫描）");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING, 14, L"立即更新病毒库");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING, 15, L"退出");
+            SetForegroundWindow(hwnd);
+            int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+            DestroyMenu(menu);
+            if (cmd == 11) {  // 显示
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
+            } else if (cmd == 12) {  // 开机自启开关
+                setAutoStart(!isAutoStartEnabled());
+                MessageBoxW(hwnd, isAutoStartEnabled() ? L"已开启开机自启" : L"已关闭开机自启",
+                            L"BlockAV", MB_OK | MB_ICONINFORMATION);
+            } else if (cmd == 13) {  // 注册右键菜单
+                registerShellContextMenu();
+                MessageBoxW(hwnd, L"右键菜单已注册！\n现在可以在文件/文件夹上右键 -> 用 BlockAV 扫描",
+                            L"BlockAV", MB_OK | MB_ICONINFORMATION);
+            } else if (cmd == 14) {  // 更新病毒库
+                setStatus(L"正在更新病毒库（后台）...");
+                updateDatabaseAsync();
+            } else if (cmd == 15) {  // 退出
+                NOTIFYICONDATAW nid = {0};
+                nid.cbSize = sizeof(nid);
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                Shell_NotifyIconW(NIM_DELETE, &nid);
+                DestroyWindow(hwnd);
+            }
+        }
+        return 0;
+    }
+
+    case WM_APP + 20: {  // 病毒库更新完成
+        int code = (int)wParam;
+        if (code == 0)
+            MessageBoxW(hwnd, L"病毒库更新完成！请重启程序加载新签名。", L"BlockAV",
+                        MB_OK | MB_ICONINFORMATION);
+        else
+            MessageBoxW(hwnd, L"病毒库更新失败，请检查网络或 Python 环境。", L"BlockAV",
+                        MB_OK | MB_ICONWARNING);
+        setStatus(L"病毒库更新结束");
         return 0;
     }
 
@@ -488,6 +741,69 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             }
         }
+        else if (id == IDC_TRUST_BTN) {
+            // 信任选中：加入白名单（按 MD5）
+            int sel = ListView_GetNextItem(g.hList, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < (int)g.results.size() && g.results[sel].infected) {
+                std::string md5 = Scanner::fileMd5(g.results[sel].path);
+                if (!md5.empty()) {
+                    g.whitelist->add(md5);
+                    g.results[sel].infected = false;
+                    std::wstring msg = L"已信任: " + utf8ToWide(g.results[sel].path);
+                    setStatus(msg.c_str());
+                    ListView_SetItemText(g.hList, sel, 1, (LPWSTR)L"[已信任]");
+                }
+            }
+        }
+        else if (id == IDC_QUARANTINE_ALL_BTN) {
+            // 一键隔离所有威胁
+            int done = 0, fail = 0;
+            for (size_t i = 0; i < g.results.size(); ++i) {
+                if (!g.results[i].infected) continue;
+                std::string out;
+                if (g.quarantine->quarantine(g.results[i].path, g.results[i].threat, out)) {
+                    g.results[i].infected = false;
+                    ListView_SetItemText(g.hList, (int)i, 1, (LPWSTR)L"[已隔离]");
+                    done++;
+                } else {
+                    fail++;
+                }
+            }
+            wchar_t buf[64];
+            swprintf_s(buf, L"隔离完成: %d 成功, %d 失败", done, fail);
+            setStatus(buf);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+        }
+        else if (id == IDC_REPORT_BTN) {
+            // 导出报告（保存对话框）
+            wchar_t filename[MAX_PATH] = L"blockav_report.html";
+            OPENFILENAMEW ofn = {0};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"HTML 报告 (*.html)\0*.html\0文本文件 (*.txt)\0*.txt\0\0";
+            ofn.lpstrFile = filename;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_OVERWRITEPROMPT;
+            if (GetSaveFileNameW(&ofn)) {
+                exportReport(filename);
+            }
+        }
+        return 0;
+    }
+
+    case WM_DROPFILES: {
+        // 拖拽文件/文件夹到窗口 -> 自动扫描
+        HDROP hDrop = (HDROP)wParam;
+        wchar_t path[MAX_PATH];
+        if (DragQueryFileW(hDrop, 0, path, MAX_PATH) > 0) {
+            // 填充路径框
+            SetWindowTextW(g.hEdit, path);
+            DragFinish(hDrop);
+            // 自动开始扫描
+            if (!g.scanning)
+                SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
+        }
         return 0;
     }
 
@@ -527,10 +843,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                            (g.stopRequested ? L" (已停止)" : L"");
         setStatus(msg.c_str());
         EnableWindow(g.hQuarantineBtn, infected > 0 ? TRUE : FALSE);
+        EnableWindow(g.hTrustBtn, infected > 0 ? TRUE : FALSE);
+        EnableWindow(g.hQuarantineAllBtn, infected > 0 ? TRUE : FALSE);
+        EnableWindow(g.hReportBtn, TRUE);
         return 0;
     }
 
     case WM_DESTROY:
+        // 清理托盘图标和定时器
+        {
+            NOTIFYICONDATAW nid = {0};
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+        }
+        KillTimer(hwnd, 1);
         if (g.scanThread.joinable()) {
             g.stopRequested = true;
             g.scanThread.join();
@@ -543,7 +871,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 // ---------- 入口 ----------
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdShow) {
+    // 解析命令行参数
+    std::wstring cmdline = lpCmdLine ? lpCmdLine : L"";
+    std::wstring scanPath;
+    bool trayMode = false;
+    {
+        std::wstring token;
+        bool inQuote = false;
+        std::vector<std::wstring> tokens;
+        for (size_t i = 0; i <= cmdline.size(); ++i) {
+            wchar_t c = (i < cmdline.size()) ? cmdline[i] : L' ';
+            if (c == L'"') { inQuote = !inQuote; continue; }
+            if (c == L' ' && !inQuote) {
+                if (!token.empty()) tokens.push_back(token);
+                token.clear();
+            } else token += c;
+        }
+        for (size_t t = 0; t < tokens.size(); ++t) {
+            if (tokens[t] == L"--scan" && t + 1 < tokens.size()) scanPath = tokens[t + 1];
+            if (tokens[t] == L"--tray") trayMode = true;
+            if (tokens[t] == L"--install-context") registerShellContextMenu();
+        }
+    }
+
     // 声明 Per-Monitor DPI 感知（解决高分屏模糊）—— 在创建窗口前调用
     HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
     BOOL dpiSetOk = FALSE;
@@ -590,8 +941,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
     Scanner scanner(db);
     Quarantine q("quarantine");
+    Whitelist wl("whitelist.txt");
+    scanner.setWhitelist(&wl);
     g.scanner = &scanner;
     g.quarantine = &q;
+    g.whitelist = &wl;
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = WndProc;
@@ -614,6 +968,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
+
+    // 命令行指定扫描路径（右键菜单调用）
+    if (!scanPath.empty()) {
+        SetWindowTextW(g.hEdit, scanPath.c_str());
+        SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SCAN_BTN, 0), 0);
+    }
+    // 托盘模式：启动后隐藏到托盘
+    if (trayMode && scanPath.empty()) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
