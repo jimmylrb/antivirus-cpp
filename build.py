@@ -1,0 +1,53 @@
+# build.py — 用 Python 直接调用 MSVC 编译（避免 cmd 批处理编码问题）
+import os
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+VC = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207"
+KIT = r"C:\Program Files (x86)\Windows Kits\10"
+KITV = "10.0.26100.0"
+
+CL = os.path.join(VC, r"bin\Hostx64\x64\cl.exe")
+if not os.path.exists(CL):
+    print("[ERROR] cl.exe not found:", CL)
+    sys.exit(1)
+
+env = os.environ.copy()
+env["PATH"] = os.path.join(VC, r"bin\Hostx64\x64") + ";" + \
+             os.path.join(KIT, r"bin", KITV, "x64") + ";" + env.get("PATH", "")
+env["INCLUDE"] = ";".join([
+    os.path.join(VC, "include"),
+    os.path.join(KIT, "Include", KITV, "ucrt"),
+    os.path.join(KIT, "Include", KITV, "um"),
+    os.path.join(KIT, "Include", KITV, "shared"),
+])
+env["LIB"] = ";".join([
+    os.path.join(VC, "lib", "x64"),
+    os.path.join(KIT, "Lib", KITV, "ucrt", "x64"),
+    os.path.join(KIT, "Lib", KITV, "um", "x64"),
+])
+
+src = os.path.join(ROOT, "src", "main.cpp")
+out = os.path.join(ROOT, "blockav.exe")
+
+cmd = [
+    CL, "/nologo", "/std:c++17", "/O2", "/EHsc", "/W3", "/utf-8",
+    "/D_CRT_SECURE_NO_WARNINGS",
+    src,
+    "/Fe:" + out,
+    "/link", "/SUBSYSTEM:CONSOLE",
+]
+
+print("[BUILD]", " ".join(cmd))
+r = subprocess.run(cmd, env=env, cwd=ROOT)
+if r.returncode != 0:
+    print("[ERROR] build failed (code %d)" % r.returncode)
+    sys.exit(r.returncode)
+
+print("[DONE] generated", out)
+print("Usage:")
+print("  blockav.exe update database")
+print("  blockav.exe scan <path> --heu")
+print("  blockav.exe quarantine --list")
