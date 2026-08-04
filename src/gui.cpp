@@ -99,6 +99,8 @@ struct AppState {
     size_t infectedCount = 0;
     size_t suspiciousCount = 0;
     ULONGLONG scanStartTime = 0;
+    int progress = 0;              // 0-10000，自绘渐变进度条
+    RECT progressRect = {0,0,0,0}; // 进度条区域
 };
 
 static AppState g;
@@ -335,15 +337,34 @@ static void drawGrid(HDC hdc, const RECT& rc, int step) {
     DeleteObject(pen);
 }
 
-// 横幅霓虹渐变底（青 -> 电蓝 -> 紫）
+// 横幅霓虹渐变背景（深青 -> 深蓝 -> 深紫 纵向）+ 底部发光带 + 网格
 static void drawBanner(HDC hdc, int width) {
     RECT full = { 0, 0, width, S(BANNER_H) };
-    HBRUSH bg = CreateSolidBrush(CLR_PANEL);
-    FillRect(hdc, &full, bg);
-    DeleteObject(bg);
+    // 纵向渐变背景
+    for (int y = 0; y < S(BANNER_H); ++y) {
+        double t = (double)y / S(BANNER_H);
+        int r, g2, b2;
+        if (t < 0.5) {
+            double u = t * 2;
+            r = (int)((0x0E) * (1 - u) + (0x16) * u);
+            g2 = (int)((0x2A) * (1 - u) + (0x20) * u);
+            b2 = (int)((0x4A) * (1 - u) + (0x4A) * u);
+        } else {
+            double u = (t - 0.5) * 2;
+            r = (int)((0x16) * (1 - u) + (0x2A) * u);
+            g2 = (int)((0x20) * (1 - u) + (0x1B) * u);
+            b2 = (int)((0x4A) * (1 - u) + (0x4E) * u);
+        }
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, 0, y, NULL);
+        LineTo(hdc, width, y);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
     // 网格（淡）
     drawGrid(hdc, full, S(24));
-    // 底部霓虹渐变线
+    // 底部霓虹渐变光带（青 -> 电蓝 -> 紫，发光）
     for (int x = 0; x < width; ++x) {
         double t = (double)x / width;
         int r, g2, b2;
@@ -365,6 +386,57 @@ static void drawBanner(HDC hdc, int width) {
         SelectObject(hdc, old);
         DeleteObject(pen);
     }
+}
+
+// 绘制渐变进度条（青 -> 紫，带右端发光点）
+static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
+    // 轨道（深色圆角）
+    HPEN trackPen = CreatePen(PS_SOLID, 1, RGB(0x1E, 0x28, 0x42));
+    HBRUSH trackBr = CreateSolidBrush(CLR_PANEL);
+    HGDIOBJ oP = SelectObject(hdc, trackPen);
+    HGDIOBJ oB = SelectObject(hdc, trackBr);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, S(6), S(6));
+    SelectObject(hdc, oP);
+    SelectObject(hdc, oB);
+    DeleteObject(trackPen);
+    DeleteObject(trackBr);
+
+    if (progress <= 0) return;
+    int barW = (int)((rc.right - rc.left) * progress / 10000.0);
+    if (barW < S(6)) barW = S(6);
+    // 渐变填充（青 -> 电蓝 -> 紫，横向）
+    for (int x = rc.left + S(1); x < rc.left + barW - S(1); ++x) {
+        double t = (double)(x - rc.left) / (rc.right - rc.left);
+        int r, g2, b2;
+        if (t < 0.5) {
+            double u = t * 2;
+            r = (int)(GetRValue(CLR_NEON) * (1 - u) + GetRValue(CLR_NEON2) * u);
+            g2 = (int)(GetGValue(CLR_NEON) * (1 - u) + GetGValue(CLR_NEON2) * u);
+            b2 = (int)(GetBValue(CLR_NEON) * (1 - u) + GetBValue(CLR_NEON2) * u);
+        } else {
+            double u = (t - 0.5) * 2;
+            r = (int)(GetRValue(CLR_NEON2) * (1 - u) + GetRValue(CLR_PURPLE) * u);
+            g2 = (int)(GetGValue(CLR_NEON2) * (1 - u) + GetGValue(CLR_PURPLE) * u);
+            b2 = (int)(GetBValue(CLR_NEON2) * (1 - u) + GetBValue(CLR_PURPLE) * u);
+        }
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, x, rc.top + S(1), NULL);
+        LineTo(hdc, x, rc.bottom - S(1));
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
+    // 右端发光点
+    int endX = rc.left + barW - S(1);
+    HBRUSH glow = CreateSolidBrush(CLR_NEON);
+    HPEN gp = CreatePen(PS_SOLID, 1, CLR_NEON);
+    oP = SelectObject(hdc, gp);
+    oB = SelectObject(hdc, glow);
+    Ellipse(hdc, endX - S(3), rc.top + S(1), endX + S(4), rc.bottom - S(1));
+    SelectObject(hdc, oP);
+    SelectObject(hdc, oB);
+    DeleteObject(glow);
+    DeleteObject(gp);
 }
 
 // 发光文字：光晕层 + 清晰层
@@ -507,11 +579,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                           S(20), S(WORK_TOP) + S(34), S(360), S(22), hwnd, (HMENU)IDC_HEURISTIC_CHECK, hInst, NULL);
         SendMessageW(g.hHeuristicCheck, BM_SETCHECK, BST_CHECKED, 0);
 
-        g.hProgress = CreateWindowW(PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
-                                    S(20), S(WORK_TOP) + S(62), S(700), S(12), hwnd, (HMENU)IDC_PROGRESS, hInst, NULL);
-        SendMessageW(g.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 10000));
-        SendMessageW(g.hProgress, PBM_SETBARCOLOR, 0, (LPARAM)CLR_NEON);
-        SendMessageW(g.hProgress, PBM_SETBKCOLOR, 0, (LPARAM)CLR_PANEL);
+        // 渐变进度条（自绘，区域占位）
+        g.progressRect = { S(20), S(WORK_TOP) + S(62), S(20) + S(700), S(WORK_TOP) + S(62) + S(12) };
+        g.hProgress = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                                    g.progressRect.left, g.progressRect.top,
+                                    g.progressRect.right - g.progressRect.left,
+                                    g.progressRect.bottom - g.progressRect.top,
+                                    hwnd, (HMENU)IDC_PROGRESS, hInst, NULL);
 
         g.hList = CreateWindowW(WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_BORDER |
                                 LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -702,6 +776,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT work = { 0, S(BANNER_H), rc.right, rc.bottom };
         drawGrid(hdc, work, S(32));
 
+        // 渐变进度条
+        drawProgressBar(hdc, g.progressRect, g.progress);
+
         // 发光标题（自绘，替代 STATIC）
         drawGlowText(hdc, L"二伯杀毒 ErBaiAV", S(100), S(22), g.hFontTitle, CLR_NEON, CLR_TEXT);
         drawGlowText(hdc, L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析 · 实时防护",
@@ -714,23 +791,47 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlType == ODT_BUTTON) {
-            // 霓虹按钮
+            // 渐变霓虹按钮：青 -> 电蓝 横向渐变
             HDC hdc = dis->hDC;
             RECT rc = dis->rcItem;
             bool disabled = (dis->itemState & ODS_DISABLED) != 0;
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
             bool focused = (dis->itemState & ODS_FOCUS) != 0;
-            // 背景
-            HBRUSH bg = CreateSolidBrush(pressed ? CLR_NEON2 : CLR_PANEL);
-            HPEN pen = CreatePen(PS_SOLID, pressed ? S(2) : S(1),
-                                 disabled ? RGB(0x2A, 0x35, 0x4D) : (focused ? CLR_PURPLE : CLR_BTN_BORDER));
-            HGDIOBJ oPen = SelectObject(hdc, pen);
-            HGDIOBJ oBr = SelectObject(hdc, bg);
-            RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
-            SelectObject(hdc, oPen);
-            SelectObject(hdc, oBr);
-            DeleteObject(bg);
-            DeleteObject(pen);
+
+            if (disabled) {
+                HBRUSH bg = CreateSolidBrush(RGB(0x1C, 0x22, 0x33));
+                HPEN pen = CreatePen(PS_SOLID, 1, RGB(0x2A, 0x35, 0x4D));
+                HGDIOBJ oPen = SelectObject(hdc, pen);
+                HGDIOBJ oBr = SelectObject(hdc, bg);
+                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
+                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
+                DeleteObject(bg); DeleteObject(pen);
+            } else {
+                // 渐变背景（青 #00A8E8 -> 蓝 #4D7FFF，按下时反向往深）
+                for (int x = rc.left + 1; x < rc.right - 1; ++x) {
+                    double t = (double)(x - rc.left) / (rc.right - rc.left);
+                    int r, g2, b2;
+                    int c1r = pressed ? 0x2D : 0x00, c1g = pressed ? 0x6B : 0xA8, c1b = pressed ? 0x9E : 0xE8;
+                    int c2r = pressed ? 0x1E : 0x4D, c2g = pressed ? 0x4A : 0x7F, c2b = pressed ? 0x8F : 0xFF;
+                    r = (int)(c1r * (1 - t) + c2r * t);
+                    g2 = (int)(c1g * (1 - t) + c2g * t);
+                    b2 = (int)(c1b * (1 - t) + c2b * t);
+                    HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g2, b2));
+                    HGDIOBJ old = SelectObject(hdc, pen);
+                    MoveToEx(hdc, x, rc.top + 1, NULL);
+                    LineTo(hdc, x, rc.bottom - 1);
+                    SelectObject(hdc, old);
+                    DeleteObject(pen);
+                }
+                // 边框（聚焦紫色）
+                HPEN pen = CreatePen(PS_SOLID, focused ? S(2) : S(1),
+                                     focused ? CLR_PURPLE : CLR_BTN_BORDER);
+                HGDIOBJ oPen = SelectObject(hdc, pen);
+                HGDIOBJ oBr = SelectObject(hdc, (HBRUSH)GetStockObject(NULL_BRUSH));
+                RoundRect(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, S(8), S(8));
+                SelectObject(hdc, oPen); SelectObject(hdc, oBr);
+                DeleteObject(pen);
+            }
             // 文字
             wchar_t buf[64];
             GetWindowTextW(dis->hwndItem, buf, 64);
@@ -803,7 +904,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g.results.clear();
             g.infectedCount = 0;
             g.suspiciousCount = 0;
-            SendMessageW(g.hProgress, PBM_SETPOS, 0, 0);
+            g.progress = 0;
+            InvalidateRect(hwnd, &g.progressRect, TRUE);
             EnableWindow(g.hScanBtn, FALSE);
             EnableWindow(g.hStopBtn, TRUE);
             EnableWindow(g.hQuarantineBtn, FALSE);
@@ -898,7 +1000,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_SCAN_PROGRESS: {
         size_t done = (size_t)wParam;
         size_t total = g.totalFiles ? g.totalFiles : 1;
-        SendMessageW(g.hProgress, PBM_SETPOS, (WPARAM)(done * 10000 / total), 0);
+        g.progress = (int)(done * 10000 / total);
+        InvalidateRect(hwnd, &g.progressRect, TRUE);
         wchar_t buf[32];
         swprintf_s(buf, L"%llu", (unsigned long long)done);
         SetWindowTextW(g.hStatFiles, buf);
@@ -919,6 +1022,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         EnableWindow(g.hScanBtn, TRUE);
         EnableWindow(g.hStopBtn, FALSE);
         if (g.scanThread.joinable()) g.scanThread.join();
+        // 完成进度条（若正常完成到 100%%）
+        if (!g.stopRequested) { g.progress = 10000; InvalidateRect(hwnd, &g.progressRect, TRUE); }
         ULONGLONG elapsed = (GetTickCount64() - g.scanStartTime) / 1000;
         wchar_t buf[32];
         swprintf_s(buf, L"%llus", (unsigned long long)elapsed);
