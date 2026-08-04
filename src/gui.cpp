@@ -642,14 +642,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER: {
         if (wParam == 2) {
-            // 动画帧：只重绘光带 + 进度条两个细条区域（窗口不可见时跳过，避免累积）
+            // 动画帧：只重绘横幅光带细条（单独 InvalidateRect，避免与进度条合并成包围盒
+            // 覆盖中间控件导致闪烁）进度条由扫描进度消息驱动
             g.animFrame++;
             if (IsWindowVisible(hwnd)) {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
                 RECT band = { 0, S(BANNER_H) - S(5), rc.right, S(BANNER_H) };
                 InvalidateRect(hwnd, &band, FALSE);
-                InvalidateRect(hwnd, &g.progressRect, FALSE);
             }
             return 0;
         }
@@ -1077,6 +1077,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                            std::to_wstring(infected) + L" 个威胁" +
                            (g.stopRequested ? L" (已停止)" : L"");
         setStatus(msg.c_str());
+        // 无威胁时列表显示提示行（让扫描结果有反馈）
+        if (infected == 0 && total > 0) {
+            std::wstring cleanMsg = L"扫描 " + std::to_wstring(total) + L" 个文件 · 用时 " +
+                                    std::to_wstring(elapsed) + L"s · ✅ 未发现威胁";
+            addListItem(L"✅ 未发现威胁", cleanMsg.c_str());
+        }
         EnableWindow(g.hQuarantineBtn, infected > 0 ? TRUE : FALSE);
         EnableWindow(g.hTrustBtn, infected > 0 ? TRUE : FALSE);
         EnableWindow(g.hQuarantineAllBtn, infected > 0 ? TRUE : FALSE);
