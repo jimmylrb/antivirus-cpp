@@ -38,6 +38,7 @@ cmd = [
     src,
     "/Fe:" + out,
     "/link", "/SUBSYSTEM:CONSOLE",
+    "user32.lib", "advapi32.lib", "shell32.lib",
 ]
 
 print("[BUILD]", " ".join(cmd))
