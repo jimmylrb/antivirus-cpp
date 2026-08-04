@@ -22,6 +22,7 @@
 #include "scanner.h"
 #include "process.h"
 #include "monitor.h"
+#include "tools.h"
 
 namespace fsg = std::filesystem;
 
@@ -95,6 +96,7 @@ enum {
     IDC_PROCESS_BTN,
     IDC_QUICK_BTN,
     IDC_UPDATE_BTN,
+    IDC_TOOLBOX_BTN,
     IDC_HEURISTIC_CHECK,
     IDC_PROGRESS,
     IDC_LIST,
@@ -113,7 +115,7 @@ static int S(int v) { return (int)(v * g_scale + 0.5f); }
 
 struct AppState {
     HWND hEdit, hBrowse, hProgress, hList, hStatus;
-    HWND hProcessBtn, hQuickBtn, hUpdateBtn;
+    HWND hProcessBtn, hQuickBtn, hUpdateBtn, hToolboxBtn;
     HWND hScanBtn, hStopBtn, hQuarantineBtn, hHeuristicCheck;
     HWND hTrustBtn, hQuarantineAllBtn, hReportBtn;
     HWND hStatFiles, hStatThreats, hStatTime, hLogo;
@@ -133,6 +135,8 @@ struct AppState {
     size_t totalFiles = 0;
     size_t infectedCount = 0;
     size_t suspiciousCount = 0;
+    int scanKind = 0;          // 0=文件/目录扫描, 1=进程扫描
+    bool updateMode = false;   // 病毒库更新模式（WM_SCAN_DONE 跳过覆盖）
     ULONGLONG scanStartTime = 0;
     int progress = 0;               // 0-10000
     RECT progressRect = {0,0,0,0};
@@ -468,6 +472,7 @@ static void drawProgressBar(HDC hdc, const RECT& rc, int progress) {
 // ---------- 扫描线程 ----------
 
 static void scanThreadFunc(std::vector<std::wstring> paths) {
+    g.scanKind = 0;
     size_t total = 0;
     {
         std::error_code ec;
@@ -541,8 +546,18 @@ static void scanThreadFunc(std::vector<std::wstring> paths) {
     PostMessageW(GetParent(g.hList), WM_SCAN_DONE, infected, results.size());
 }
 
+// 扫描/更新期间统一禁用操作按钮，结束后恢复
+static void setActionButtonsEnabled(bool en) {
+    EnableWindow(g.hScanBtn, en);
+    EnableWindow(g.hProcessBtn, en);
+    EnableWindow(g.hQuickBtn, en);
+    EnableWindow(g.hUpdateBtn, en);
+    EnableWindow(g.hToolboxBtn, en);
+}
+
 // ---------- 进程扫描线程 ----------
 static void processScanThreadFunc() {
+    g.scanKind = 1;
     std::vector<av::ProcessResult> procs;
     if (g.db) av::scanProcesses(*g.db, procs);
     // 转成 ScanResult 存入列表
@@ -567,6 +582,7 @@ static void processScanThreadFunc() {
     g.infectedCount = infected;
     g.suspiciousCount = 0;
     g.totalFiles = procs.size();
+    g.scanning = false;
     PostMessageW(GetParent(g.hList), WM_SCAN_DONE, infected, results.size());
 }
 
@@ -635,11 +651,21 @@ static std::vector<std::wstring> collectQuickScanPaths() {
         paths.push_back(dl);
         CoTaskMemFree(dl);
     }
-    return paths;
+    // 去重（注册表项可能重复），保留顺序
+    std::vector<std::wstring> uniq;
+    for (auto& p : paths) {
+        bool dup = false;
+        for (auto& u : uniq) {
+            if (_wcsicmp(p.c_str(), u.c_str()) == 0) { dup = true; break; }
+        }
+        if (!dup) uniq.push_back(p);
+    }
+    return uniq;
 }
 
 // ---------- 病毒库更新线程 ----------
 static void updateDatabaseThreadFunc() {
+    g.updateMode = true;
     // 调用 python update_database.py（后台）
     wchar_t dir[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, dir);
@@ -656,12 +682,19 @@ static void updateDatabaseThreadFunc() {
                             CREATE_NO_WINDOW, NULL, dir, &si, &pi);
     }
     if (!ok) {
-        std::wstring msg = L"更新失败：未找到 Python（需要安装 Python 并加入 PATH）";
-        PostMessageW(GetParent(g.hList), WM_SCAN_DONE, (WPARAM)1, (LPARAM)0);
+        g.scanning = false;
+        PostMessageW(GetParent(g.hList), WM_APP + 21, (WPARAM)2, 0);  // 2=未找到 Python
         return;
     }
-    WaitForSingleObject(pi.hProcess, 5 * 60 * 1000);  // 最多等 5 分钟
+    // 轮询等待（支持退出时中断，避免 join 卡 5 分钟）
     DWORD code = 0;
+    while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {
+        if (g.stopRequested) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+            break;
+        }
+    }
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
@@ -669,13 +702,216 @@ static void updateDatabaseThreadFunc() {
     if (g.db) {
         loadDatabase(*g.db, "database");
     }
-    std::wstring msg = (code == 0)
-        ? L"病毒库更新完成，已加载最新签名"
-        : L"病毒库更新失败（网络或脚本错误），已保留旧库";
-    g.progress = 10000;
-    InvalidateRect(GetParent(g.hList), &g.progressRect, TRUE);
-    PostMessageW(GetParent(g.hList), WM_SCAN_DONE, (WPARAM)0, (LPARAM)0);
-    setStatus(msg.c_str());
+    g.scanning = false;
+    PostMessageW(GetParent(g.hList), WM_APP + 21, (WPARAM)(code == 0 ? 0 : 1), 0);
+}
+
+// ---------- 工具箱对话框 ----------
+enum { TB_FULLSCAN = 3001, TB_JUNK, TB_JUNK_CLEAN, TB_STARTUP, TB_STARTUP_DEL,
+       TB_NET, TB_APPS, TB_SHRED, TB_CLOSE };
+struct ToolboxData {
+    HWND hList;
+    std::vector<av::JunkItem> junk;
+    std::vector<av::StartupItem> startup;
+};
+
+static void tbAddRow(HWND lv, const wchar_t* c1, const wchar_t* c2, const wchar_t* c3) {
+    LVITEMW item = {0};
+    item.mask = LVIF_TEXT;
+    item.iItem = ListView_GetItemCount(lv);
+    item.pszText = (LPWSTR)c1;
+    ListView_InsertItem(lv, &item);
+    if (c2) ListView_SetItemText(lv, item.iItem, 1, (LPWSTR)c2);
+    if (c3) ListView_SetItemText(lv, item.iItem, 2, (LPWSTR)c3);
+}
+
+static LRESULT CALLBACK ToolboxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        HINSTANCE hInst = GetModuleHandle(NULL);
+        UINT dpi = GetDpiForWindow(hwnd);
+        g_scale = dpi / 96.0f;
+        RECT work;
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+            float maxW = (float)(work.right - work.left) / 560.0f;
+            float maxH = (float)(work.bottom - work.top) / 440.0f;
+            float m = maxW < maxH ? maxW : maxH;
+            if (g_scale > m) g_scale = m;
+        }
+        ToolboxData* d = new ToolboxData;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)d);
+        d->hList = CreateWindowW(L"SysListView32", L"", WS_CHILD | WS_VISIBLE | WS_BORDER |
+                                 LVS_REPORT | LVS_SINGLESEL, S(10), S(84), S(540), S(300),
+                                 hwnd, NULL, hInst, NULL);
+        ListView_SetExtendedListViewStyle(d->hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+        {
+            LVCOLUMNW col = {0};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+            col.fmt = LVCFMT_LEFT;
+            col.cx = S(90);
+            col.pszText = (LPWSTR)L"类型";
+            ListView_InsertColumn(d->hList, 0, &col);
+        }
+        {
+            LVCOLUMNW col = {0};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+            col.fmt = LVCFMT_LEFT;
+            col.cx = S(220);
+            col.pszText = (LPWSTR)L"名称";
+            ListView_InsertColumn(d->hList, 1, &col);
+        }
+        {
+            LVCOLUMNW col = {0};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+            col.fmt = LVCFMT_LEFT;
+            col.cx = S(220);
+            col.pszText = (LPWSTR)L"详情";
+            ListView_InsertColumn(d->hList, 2, &col);
+        }
+        // 按钮两行（避免重叠）
+        struct { int id; const wchar_t* txt; int x; int y; } btns[] = {
+            { TB_FULLSCAN, L"🖥 全盘扫描", 10, 10 }, { TB_JUNK, L"🧹 垃圾清理", 105, 10 },
+            { TB_STARTUP, L"🚀 启动项", 200, 10 }, { TB_NET, L"🌐 网络连接", 295, 10 },
+            { TB_APPS, L"📦 软件列表", 390, 10 }, { TB_SHRED, L"🗑 文件粉碎", 485, 10 },
+            { TB_JUNK_CLEAN, L"🧹 清理选中", 10, 46 }, { TB_STARTUP_DEL, L"🗑 删除选中", 105, 46 },
+            { TB_CLOSE, L"关闭", 200, 46 },
+        };
+        for (auto& b : btns) {
+            CreateWindowW(L"BUTTON", b.txt, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                          S(b.x), S(b.y), S(90), S(30), hwnd, (HMENU)b.id, hInst, NULL);
+        }
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        ToolboxData* d = (ToolboxData*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        if (!d) return 0;
+        ListView_DeleteAllItems(d->hList);
+        if (id == TB_FULLSCAN) {
+            // 全盘扫描：收集盘符，关闭工具箱，主界面执行
+            auto drv = av::allDrivePaths();
+            if (drv.empty()) { MessageBoxW(hwnd, L"未找到磁盘", L"工具箱", MB_OK); return 0; }
+            g.results.clear();
+            ListView_DeleteAllItems(g.hList);
+            g.infectedCount = 0; g.suspiciousCount = 0; g.progress = 0;
+            InvalidateRect(GetParent(g.hList), &g.progressRect, TRUE);
+            setStatus(L"全盘扫描中...");
+            g.scanning = true; g.stopRequested = false; g.scanStartTime = GetTickCount64();
+            setActionButtonsEnabled(FALSE);
+            EnableWindow(g.hStopBtn, TRUE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            EnableWindow(g.hReportBtn, FALSE);
+            std::vector<std::wstring> paths;
+            for (auto& x : drv) paths.push_back(x);
+            g.scanThread = std::thread(scanThreadFunc, paths);
+            DestroyWindow(hwnd);
+        }
+        else if (id == TB_JUNK) {
+            av::collectJunkFiles(d->junk);
+            for (auto& it : d->junk)
+                tbAddRow(d->hList, it.category.c_str(), it.path.c_str(), L"");
+            SetWindowTextW(GetDlgItem(hwnd, TB_CLOSE), L"");
+        }
+        else if (id == TB_JUNK_CLEAN) {
+            int sel = ListView_GetNextItem(d->hList, -1, LVNI_SELECTED);
+            if (sel < 0 || sel >= (int)d->junk.size()) { MessageBoxW(hwnd, L"请先选中一行", L"工具箱", MB_OK); return 0; }
+            if (av::deleteJunkPath(d->junk[sel].path))
+                ListView_DeleteItem(d->hList, sel), d->junk.erase(d->junk.begin() + sel);
+        }
+        else if (id == TB_STARTUP) {
+            av::collectStartupItems(d->startup);
+            for (auto& it : d->startup)
+                tbAddRow(d->hList, it.location.c_str(), it.name.c_str(), it.command.c_str());
+        }
+        else if (id == TB_STARTUP_DEL) {
+            int sel = ListView_GetNextItem(d->hList, -1, LVNI_SELECTED);
+            if (sel < 0 || sel >= (int)d->startup.size()) { MessageBoxW(hwnd, L"请先选中一行", L"工具箱", MB_OK); return 0; }
+            if (MessageBoxW(hwnd, L"确定删除该启动项？", L"工具箱", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                if (av::removeStartupItem(d->startup[sel]))
+                    ListView_DeleteItem(d->hList, sel), d->startup.erase(d->startup.begin() + sel);
+                else MessageBoxW(hwnd, L"删除失败（可能需要管理员权限）", L"工具箱", MB_OK | MB_ICONWARNING);
+            }
+        }
+        else if (id == TB_NET) {
+            auto conns = av::collectNetConnections();
+            for (auto& c : conns) {
+                std::wstring det = c.remote + L" " + c.state + L" [PID " + std::to_wstring(c.pid) + L" " + c.procName + L"]";
+                tbAddRow(d->hList, c.proto.c_str(), c.local.c_str(), det.c_str());
+            }
+        }
+        else if (id == TB_APPS) {
+            std::vector<av::InstalledApp> apps;
+            av::collectInstalledApps(apps);
+            for (auto& a : apps) {
+                std::wstring v = a.version.empty() ? L"" : (L"v" + a.version);
+                tbAddRow(d->hList, a.publisher.empty() ? L"软件" : a.publisher.c_str(), a.name.c_str(), v.c_str());
+            }
+        }
+        else if (id == TB_SHRED) {
+            wchar_t file[MAX_PATH] = L"";
+            OPENFILENAMEW ofn = { sizeof(ofn), hwnd };
+            ofn.lpstrFilter = L"所有文件 (*.*)\\0*.*\\0";
+            ofn.lpstrFile = file;
+            ofn.nMaxFile = MAX_PATH;
+            if (GetOpenFileNameW(&ofn)) {
+                if (MessageBoxW(hwnd, L"文件粉碎后无法恢复，确定继续？", L"工具箱", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                    bool ok = av::shredFile(file);
+                    MessageBoxW(hwnd, ok ? L"✅ 文件已粉碎删除" : L"❌ 粉碎失败（文件被占用或权限不足）", L"工具箱", MB_OK);
+                }
+            }
+        }
+        else if (id == TB_CLOSE) {
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = (HDC)wParam;
+        SetTextColor(hdc, CLR_TEXT);
+        SetBkColor(hdc, CLR_BG);
+        static HBRUSH br = CreateSolidBrush(CLR_BG);
+        return (LRESULT)br;
+    }
+    case WM_DESTROY: {
+        ToolboxData* d = (ToolboxData*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        if (d) delete d;
+        return 0;
+    }
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void showToolbox(HINSTANCE hInst, HWND parent) {
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = ToolboxProc;
+    wc.hInstance = hInst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)CreateSolidBrush(CLR_BG);
+    wc.lpszClassName = L"BlockAVToolbox";
+    RegisterClassW(&wc);
+    HWND hwnd = CreateWindowW(L"BlockAVToolbox", L"🧰 二伯杀毒工具箱",
+                              WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+                              S(560), S(440), parent, NULL, hInst, NULL);
+    if (!hwnd) return;
+    RECT work, rc;
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0) && GetWindowRect(hwnd, &rc)) {
+        int w = rc.right - rc.left, h = rc.bottom - rc.top;
+        SetWindowPos(hwnd, NULL, work.left + (work.right - work.left - w) / 2,
+                     work.top + (work.bottom - work.top - h) / 2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    // 模态消息循环（禁用父窗口）
+    EnableWindow(parent, FALSE);
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0)) {
+        if (!IsWindow(hwnd) || msg.message == WM_QUIT) break;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
 }
 
 // ---------- 窗口过程 ----------
@@ -771,6 +1007,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                     S(135), S(WORK_TOP) + S(460), S(110), S(30), hwnd, (HMENU)IDC_QUICK_BTN, hInst, NULL);
         g.hUpdateBtn = CreateWindowW(L"BUTTON", L"🔄 更新病毒库", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                      S(250), S(WORK_TOP) + S(460), S(140), S(30), hwnd, (HMENU)IDC_UPDATE_BTN, hInst, NULL);
+        g.hToolboxBtn = CreateWindowW(L"BUTTON", L"🧰 工具箱", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                      S(395), S(WORK_TOP) + S(460), S(100), S(30), hwnd, (HMENU)IDC_TOOLBOX_BTN, hInst, NULL);
 
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                           GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
@@ -817,7 +1055,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int hover = -1;
         HWND btns[] = { g.hScanBtn, g.hStopBtn, g.hBrowse,
                         g.hQuarantineBtn, g.hTrustBtn, g.hQuarantineAllBtn, g.hReportBtn,
-                        g.hProcessBtn, g.hQuickBtn, g.hUpdateBtn };
+                        g.hProcessBtn, g.hQuickBtn, g.hUpdateBtn, g.hToolboxBtn };
         for (HWND h : btns) {
             if (!h) continue;
             RECT rc;
@@ -843,6 +1081,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             // 动画帧：只重绘横幅光带细条（单独 InvalidateRect，避免与进度条合并成包围盒
             // 覆盖中间控件导致闪烁）进度条由扫描进度消息驱动
             g.animFrame++;
+            if (g.animFrame > 100000) g.animFrame = 0;  // 防溢出
             if (IsWindowVisible(hwnd)) {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
@@ -923,12 +1162,37 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_APP + 21: {
+        // 病毒库更新完成（后台按钮）：恢复按钮 + 状态栏提示（不被 WM_SCAN_DONE 覆盖）
+        int code = (int)wParam;
+        g.updateMode = false;
+        setActionButtonsEnabled(TRUE);
+        EnableWindow(g.hStopBtn, FALSE);
+        EnableWindow(g.hQuarantineBtn, FALSE);
+        EnableWindow(g.hTrustBtn, FALSE);
+        EnableWindow(g.hQuarantineAllBtn, FALSE);
+        EnableWindow(g.hReportBtn, TRUE);
+        g.progress = 10000;
+        InvalidateRect(hwnd, &g.progressRect, TRUE);
+        if (code == 0)
+            setStatus(L"✅ 病毒库更新完成，已加载最新签名");
+        else if (code == 1)
+            setStatus(L"⚠ 病毒库更新失败（网络或脚本错误），已保留旧库");
+        else
+            setStatus(L"⚠ 更新失败：未找到 Python（需安装并加入 PATH）");
+        return 0;
+    }
+
     case WM_APP + 10: {
         // 实时监控发现威胁：托盘气泡 + 加入结果列表
         std::string p, t;
         { std::lock_guard<std::mutex> lk(g.threatMutex);
           p = g.pendingPath; t = g.pendingThreat; }
         if (p.empty()) return 0;
+        // 去重：同一文件已在列表则跳过（ReadDirectoryChangesW 会触发 ADDED+MODIFIED 两次）
+        for (const auto& r : g.results) {
+            if (r.path == p) return 0;
+        }
         // 托盘气泡
         NOTIFYICONDATAW nid = { sizeof(nid) };
         nid.hWnd = hwnd;
@@ -1275,6 +1539,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g.scanning = true;
             g.stopRequested = false;
             g.scanStartTime = GetTickCount64();
+            setActionButtonsEnabled(FALSE);
+            EnableWindow(g.hStopBtn, TRUE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            EnableWindow(g.hReportBtn, FALSE);
             g.scanThread = std::thread(processScanThreadFunc);
         }
         else if (id == IDC_QUICK_BTN) {
@@ -1295,6 +1565,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g.scanning = true;
             g.stopRequested = false;
             g.scanStartTime = GetTickCount64();
+            setActionButtonsEnabled(FALSE);
+            EnableWindow(g.hStopBtn, TRUE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            EnableWindow(g.hReportBtn, FALSE);
             g.scanThread = std::thread(scanThreadFunc, paths);
         }
         else if (id == IDC_UPDATE_BTN) {
@@ -1302,7 +1578,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (g.scanning) return 0;
             setStatus(L"正在更新病毒库（下载 ClamAV 官方库）...");
             g.scanning = true;
+            g.stopRequested = false;
+            setActionButtonsEnabled(FALSE);
+            EnableWindow(g.hStopBtn, FALSE);
+            EnableWindow(g.hQuarantineBtn, FALSE);
+            EnableWindow(g.hTrustBtn, FALSE);
+            EnableWindow(g.hQuarantineAllBtn, FALSE);
+            EnableWindow(g.hReportBtn, FALSE);
             g.scanThread = std::thread(updateDatabaseThreadFunc);
+        }
+        else if (id == IDC_TOOLBOX_BTN) {
+            if (g.scanning) return 0;
+            showToolbox((HINSTANCE)GetWindowLongPtrW(hwnd, GWLP_HINSTANCE), hwnd);
         }
         return 0;
     }
@@ -1369,7 +1656,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         size_t infected = (size_t)wParam;
         size_t total = (size_t)lParam;
         g.scanning = false;
-        EnableWindow(g.hScanBtn, TRUE);
+        setActionButtonsEnabled(TRUE);
         EnableWindow(g.hStopBtn, FALSE);
         if (g.scanThread.joinable()) g.scanThread.join();
         if (!g.stopRequested) { g.progress = 10000; InvalidateRect(hwnd, &g.progressRect, TRUE); }
@@ -1381,22 +1668,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g.statThreats = buf;
         { RECT sr = { S(500), 0, S(790), S(BANNER_H) }; InvalidateRect(hwnd, &sr, FALSE); }
 
-        std::wstring msg = L"扫描完成: " + std::to_wstring(total) + L" 个文件, 发现 " +
+        bool isProc = (g.scanKind == 1);
+        std::wstring unit = isProc ? L"个进程" : L"个文件";
+        std::wstring msg = L"扫描完成: " + std::to_wstring(total) + unit + L", 发现 " +
                            std::to_wstring(infected) + L" 个威胁" +
                            (g.stopRequested ? L" (已停止)" : L"");
-        if (total == 0 && !g.stopRequested)
+        if (!isProc && total == 0 && !g.stopRequested)
             msg = L"该位置没有可扫描的文件（空目录或路径无效）";
         setStatus(msg.c_str());
         // 无威胁时列表显示提示行（让扫描结果有反馈）
         if (infected == 0 && total > 0) {
-            std::wstring cleanMsg = L"扫描 " + std::to_wstring(total) + L" 个文件 · 用时 " +
+            std::wstring cleanMsg = L"扫描 " + std::to_wstring(total) + unit + L" · 用时 " +
                                     std::to_wstring(elapsed) + L"s · ✅ 未发现威胁";
             addListItem(L"✅ 未发现威胁", cleanMsg.c_str());
         }
-        EnableWindow(g.hQuarantineBtn, infected > 0 ? TRUE : FALSE);
-        EnableWindow(g.hTrustBtn, infected > 0 ? TRUE : FALSE);
-        EnableWindow(g.hQuarantineAllBtn, infected > 0 ? TRUE : FALSE);
+        // 进程扫描结果不能隔离/信任（路径带 PID 前缀），保持禁用
+        EnableWindow(g.hQuarantineBtn, !isProc && infected > 0 ? TRUE : FALSE);
+        EnableWindow(g.hTrustBtn, !isProc && infected > 0 ? TRUE : FALSE);
+        EnableWindow(g.hQuarantineAllBtn, !isProc && infected > 0 ? TRUE : FALSE);
         EnableWindow(g.hReportBtn, TRUE);
+        g.scanKind = 0;
         return 0;
     }
 
