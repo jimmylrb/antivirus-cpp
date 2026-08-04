@@ -765,7 +765,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (!g.hMemDC) {
             g.hMemDC = CreateCompatibleDC(hdc);
             g.hBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-            SelectObject(g.hMemDC, g.hBmp);
+            if (g.hMemDC && g.hBmp) SelectObject(g.hMemDC, g.hBmp);
+        }
+        if (!g.hMemDC || !g.hBmp) {
+            // 防御：双缓冲创建失败时直接绘制（不崩溃）
+            HBRUSH bg = CreateSolidBrush(CLR_BG);
+            FillRect(hdc, &rc, bg);
+            DeleteObject(bg);
+            EndPaint(hwnd, &ps);
+            return 0;
         }
         HDC memDC = g.hMemDC;
 
@@ -784,7 +792,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         TextOutW(memDC, S(100), S(20), L"二伯杀毒 ErBaiAV", (int)wcslen(L"二伯杀毒 ErBaiAV"));
         SelectObject(memDC, g.hFontStat);
         SetTextColor(memDC, CLR_TEXT_DIM);
-        TextOutW(memDC, S(100), S(56), L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析", 34);
+        TextOutW(memDC, S(100), S(56), L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析",
+                 (int)wcslen(L"C++ 杀毒引擎 · ClamAV 病毒库 · 启发式分析"));
         // 统计数字（亮蓝）+ 标签
         SelectObject(memDC, g.hFontStatNum);
         SetTextColor(memDC, CLR_ACCENT_HI);
@@ -793,9 +802,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         TextOutW(memDC, S(710), S(14), g.statTime.c_str(), (int)g.statTime.size());
         SelectObject(memDC, g.hFontStat);
         SetTextColor(memDC, CLR_TEXT_DIM);
-        TextOutW(memDC, S(520), S(58), L"已扫描", 3);
-        TextOutW(memDC, S(615), S(58), L"威胁", 2);
-        TextOutW(memDC, S(710), S(58), L"用时", 2);
+        TextOutW(memDC, S(520), S(58), L"已扫描", (int)wcslen(L"已扫描"));
+        TextOutW(memDC, S(615), S(58), L"威胁", (int)wcslen(L"威胁"));
+        TextOutW(memDC, S(710), S(58), L"用时", (int)wcslen(L"用时"));
         SelectObject(memDC, oldF);
 
         // 只拷贝失效区域（动画时只重绘光带/进度条，子控件不被触碰 -> 不闪烁）
