@@ -1,0 +1,15 @@
+# 构建产物
+blockav.exe
+*.obj
+*.exe
+*.o
+
+# 病毒库（大文件不上传，用 update_database.py 生成）
+database/clamav.*
+database/*.hdb
+database/*.ndb
+
+# 隔离区
+quarantine/
+__pycache__/
+*.pyc
