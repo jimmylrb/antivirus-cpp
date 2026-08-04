@@ -39,6 +39,7 @@ cmd = [
     "/Fe:" + out,
     "/link", "/SUBSYSTEM:WINDOWS",
     "user32.lib", "gdi32.lib", "comctl32.lib", "comdlg32.lib", "shell32.lib", "ole32.lib",
+    "advapi32.lib",
 ]
 
 print("[BUILD GUI]", " ".join(cmd))
