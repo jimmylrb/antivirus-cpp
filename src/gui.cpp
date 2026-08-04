@@ -656,9 +656,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER: {
         if (wParam == 2) {
-            // 动画帧：刷新横幅光带 + 进度条流光
+            // 动画帧：只重绘光带 + 进度条两个细条区域（避免全窗口重绘导致闪烁）
             g.animFrame++;
-            InvalidateRect(hwnd, NULL, FALSE);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            RECT band = { 0, S(BANNER_H) - S(5), rc.right, S(BANNER_H) };
+            InvalidateRect(hwnd, &band, FALSE);
+            InvalidateRect(hwnd, &g.progressRect, FALSE);
             return 0;
         }
         static std::vector<std::wstring> lastDrives;
@@ -774,7 +778,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        // 双缓冲（避免动画闪烁）
+        // 双缓冲：画背景层（背景色 + 横幅 + 进度条）
         HDC memDC = CreateCompatibleDC(hdc);
         HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HGDIOBJ oldBmp = SelectObject(memDC, bmp);
@@ -786,7 +790,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         drawBanner(memDC, rc.right);
         drawProgressBar(memDC, g.progressRect, g.progress);
 
-        BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+        // 只拷贝失效区域（动画时只重绘光带/进度条，子控件不被触碰 -> 不闪烁）
+        RECT pr = ps.rcPaint;
+        BitBlt(hdc, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top,
+               memDC, pr.left, pr.top, SRCCOPY);
         SelectObject(memDC, oldBmp);
         DeleteObject(bmp);
         DeleteDC(memDC);
